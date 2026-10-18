@@ -12,6 +12,8 @@ scorecard puts it next to the measured speed so the formula stays honest.
 
 from __future__ import annotations
 
+import re
+
 from . import hwprobe
 from .registry import DEFAULT_CTX, Model
 
@@ -40,11 +42,13 @@ BANDWIDTH_GBPS = {
     "rx 9070 xt": 644, "rx 9070": 640,
     "rx 7900 xtx": 960, "rx 7900 xt": 800, "rx 7800 xt": 624, "rx 7700 xt": 432,
     "rx 7600": 288,
+    # AMD Ryzen AI Max (Strix Halo): 256-bit LPDDR5X-8000 shared with the CPU
+    "radeon 8060s": 256, "radeon 8050s": 256,
 }  # fmt: skip
 
 
 def bandwidth_gbps(gpu_name: str) -> float | None:
-    name = " ".join(gpu_name.lower().split())
+    name = " ".join(re.sub(r"\((tm|r)\)", "", gpu_name.lower()).split())
     if "laptop" in name or "mobile" in name:
         return None
     for key in sorted(BANDWIDTH_GBPS, key=len, reverse=True):

@@ -47,3 +47,8 @@ def test_no_estimate_when_it_would_spill_or_the_gpu_is_unknown():
     assert estimate.tokens_per_sec(BY_NAME["llama3.3-70b"], M4_PRO, "mlx") is None
     unknown = {**M4_PRO, "gpu": {"name": "Mystery GPU", "vram_gb": 24, "kind": "other"}}
     assert estimate.tokens_per_sec(BY_NAME["llama3.2-3b"], unknown, "ollama") is None
+
+
+def test_trademark_marks_do_not_hide_the_bandwidth():
+    assert estimate.bandwidth_gbps("AMD Radeon(TM) 8060S Graphics") == 256
+    assert estimate.bandwidth_gbps("NVIDIA GeForce(R) RTX 4090") == 1008

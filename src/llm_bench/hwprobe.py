@@ -293,6 +293,25 @@ def is_integrated_intel(name):
     return "intel" in n and not re.search(r"\barc\b.*\b[ab]\d{3}", n)
 
 
+def is_amd_unified(cpu):
+    """AMD's Strix Halo APUs (Ryzen AI Max), whose GPU uses system RAM."""
+    return "ryzen ai max" in cpu.lower()
+
+
+def amd_unified_gpu(found, ram):
+    """The APU's GPU, sized at the larger of its carve-out and half of system RAM.
+
+    Windows reports the carve-out set in the BIOS as VRAM (anything from 512 MB
+    to 96 GB); Linux and Windows let the GPU borrow about half of the RAM the
+    OS sees on top of that by default.
+    """
+    amd = [g for g in found if g["kind"] == "amd"]
+    carve = max((g["vram_gb"] for g in amd), default=0.0)
+    name = amd[0]["name"] if amd else "AMD Radeon (Ryzen AI Max)"
+    borrowed = carve < ram * 0.5  # the budget is RAM the CPU would otherwise use
+    return dict(name=name, vram_gb=max(carve, ram * 0.5), kind="amd", borrowed=borrowed)
+
+
 def combine_identical(found):
     """Count identical cards as one pool: Ollama splits a model's layers across them.
 
@@ -516,6 +535,13 @@ def probe():
             and not (g["kind"] == "intel" and is_integrated_intel(g["name"]))
         ]
         best = max(cands, key=lambda g: g["vram_gb"], default=None)
+        if is_amd_unified(info["cpu"]):
+            best = amd_unified_gpu(gpus(), ram)
+            info["notes"].append(
+                "Ryzen AI Max: the GPU shares system RAM. The budget is the larger of the BIOS "
+                "carve-out and half of RAM (what the OS lets the GPU borrow by default); an "
+                "estimate until measured."
+            )
         if best:
             info["gpu"] = dict(
                 name=best["name"],
@@ -548,6 +574,8 @@ def probe():
         # Ollama offloads the layers that do not fit to the CPU; budget about
         # 60% of system RAM for that, the rest for the OS and other apps.
         info["spill_gb"] = round(info["fast_gb"] + ram * 0.6, 1)
+        if best and best.get("borrowed"):
+            info["spill_gb"] = info["fast_gb"]  # one shared pool: nothing slower to spill into
         if system == "Darwin":
             info["notes"].append("Intel Mac: no MLX; Ollama runs on the CPU.")
     return info

@@ -342,3 +342,20 @@ def test_sysfs_names_amd_cards_from_lspci(monkeypatch, tmp_path):
         "Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XT/7900 XTX]"
     )
     assert gpu["kind"] == "amd" and gpu["vram_gb"] == 24.0
+
+
+@pytest.mark.parametrize(
+    "carve,ram,fast,spill",
+    [
+        (0.5, 128.0, 63.5, 63.5),  # small carve-out: half of RAM, one shared pool
+        (96.0, 32.0, 95.5, 114.7),  # 96 GB set in the BIOS; the OS's 32 GB can take offload
+    ],
+)
+def test_ryzen_ai_max_is_budgeted_as_shared_memory(monkeypatch, carve, ram, fast, spill):
+    gpu = {"name": "AMD Radeon(TM) 8060S Graphics", "vram_gb": carve, "kind": "amd"}
+    _fake_windows(monkeypatch, [gpu], ram=ram)
+    monkeypatch.setattr(hwprobe, "cpu_name", lambda: "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S")
+    hw = hwprobe.probe()
+    assert hw["gpu"]["name"] == "AMD Radeon(TM) 8060S Graphics"
+    assert hw["fast_gb"] == fast and hw["spill_gb"] == spill
+    assert any("Ryzen AI Max" in n for n in hw["notes"])

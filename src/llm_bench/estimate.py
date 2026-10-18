@@ -51,6 +51,10 @@ def bandwidth_gbps(gpu_name: str) -> float | None:
     name = " ".join(re.sub(r"\((tm|r)\)", "", gpu_name.lower()).split())
     if "laptop" in name or "mobile" in name:
         return None
+    # lspci can name two cards at once ("Radeon RX 7900 XT/7900 XTX"); there is
+    # no telling which one this is, and their bandwidths differ
+    if re.search(r"\[[^\]]*\d[^\]]*/[^\]]*\]", name):
+        return None
     for key in sorted(BANDWIDTH_GBPS, key=len, reverse=True):
         if key in name:
             return float(BANDWIDTH_GBPS[key])

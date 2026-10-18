@@ -151,7 +151,13 @@ def test_run_ollama_sends_num_ctx_and_flags_truncation(monkeypatch):
 
 @pytest.mark.parametrize(
     "chars,tokens,cut",
-    [(20_000, 5_000, False), (20_000, 3_000, True), (1_000, 10, False)],
+    [
+        (20_000, 5_000, False),
+        (20_000, 3_000, False),  # 6.7 chars/token: a large-vocabulary tokenizer
+        (20_000, 2_000, True),
+        (20_000, 0, False),  # count missing
+        (1_000, 10, False),
+    ],
 )
 def test_looks_truncated(chars, tokens, cut):
     assert runners.looks_truncated("a" * chars, tokens) is cut

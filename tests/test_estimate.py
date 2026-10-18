@@ -31,6 +31,8 @@ def test_estimate_is_within_30_percent_of_measured(name, measured):
         ("Apple M4", 120),
         ("NVIDIA GeForce RTX 4070 Laptop GPU", None),  # narrower bus than the desktop card
         ("Some Future GPU", None),
+        ("Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XT/7900 XTX]", None),
+        ("Advanced Micro Devices, Inc. [AMD/ATI] Navi 32 [Radeon RX 7800 XT]", 624),
     ],
 )
 def test_bandwidth_lookup(name, bw):

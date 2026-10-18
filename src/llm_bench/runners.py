@@ -171,11 +171,11 @@ def ollama_num_ctx(prompt: str) -> int:
 def looks_truncated(prompt: str, prompt_tokens: int) -> bool:
     """True when the runtime evaluated far fewer tokens than the prompt holds.
 
-    No tokenizer averages more than about 6 characters per token on English,
-    so fewer tokens than that means part of the prompt was dropped. Only long
-    prompts are checked: a short one can be mostly served from Ollama's cache.
+    Large-vocabulary tokenizers reach about 6 characters per token on English,
+    so the line sits at 8: fewer tokens than that means part of the prompt was
+    dropped. Short prompts and missing counts (0) are not judged.
     """
-    return len(prompt) > 4000 and prompt_tokens < len(prompt) / 6
+    return len(prompt) > 4000 and 0 < prompt_tokens < len(prompt) / 8
 
 
 def plausible(tps: float, count: int) -> float:

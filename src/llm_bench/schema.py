@@ -17,7 +17,9 @@ from .runners import MAX_PLAUSIBLE_TPS
 from .tasks import CATEGORIES
 
 SCHEMA_VERSION = 1
-MEM_TIERS_GB = (2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 80, 96, 128, 192, 256, 512)
+MEM_TIERS_GB = (
+    2, 3, 4, 6, 8, 10, 12, 16, 18, 20, 24, 32, 36, 40, 48, 64, 80, 96, 128, 192, 256, 512,
+)  # fmt: skip
 MAX_FILE_BYTES = 1024 * 1024
 MAX_ROWS = 500
 HOME_PATH = re.compile(r"(/Users/|/home/|[A-Za-z]:\\+Users\\+)", re.IGNORECASE)
@@ -136,6 +138,9 @@ def validate_rows(rows) -> list[str]:
         return [f"{len(rows)} rows; at most {MAX_ROWS}"]
     errs = []
     for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            errs.append(f"row {i + 1}: not an object")
+            continue
         label = f"row {i + 1} ({row.get('model', '?')}, {row.get('runtime', '?')})"
         errs += [f"{label}: {e}" for e in validate_row(row)]
     return errs

@@ -49,7 +49,10 @@ def test_hardware_block_describes_the_machine_not_the_person(row):
     }  # fmt: skip
 
 
-@pytest.mark.parametrize("gb,tier", [(11.99, 12), (15.8, 16), (24.0, 24), (7.6, 8)])
+@pytest.mark.parametrize(
+    "gb,tier",
+    [(11.99, 12), (15.8, 16), (24.0, 24), (7.6, 8), (10.0, 10), (18.0, 18), (36.0, 36)],
+)
 def test_mem_tier_snaps_to_marketed_sizes(gb, tier):
     assert schema.mem_tier(gb) == tier
 
@@ -93,3 +96,7 @@ def test_validate_rows_labels_each_problem(row):
     bad["quality_overall"] = 2
     errs = schema.validate_rows([row, bad])
     assert errs == ["row 2 (qwen2.5-7b, ollama): quality_overall must be between 0 and 1"]
+
+
+def test_validate_rows_reports_non_objects_instead_of_crashing(row):
+    assert schema.validate_rows([row, 1]) == ["row 2: not an object"]

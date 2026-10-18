@@ -21,7 +21,7 @@ def test_found_on_path(tmp_path, monkeypatch):
     bin_dir.mkdir()
     exe = _make_exe(bin_dir / ("tool.exe" if os.name == "nt" else "tool"))
     monkeypatch.setenv("PATH", str(bin_dir))
-    assert find_exe("tool") == str(exe)
+    assert os.path.normcase(find_exe("tool")) == os.path.normcase(str(exe))
 
 
 def test_current_directory_is_never_searched(tmp_path, monkeypatch):

@@ -252,9 +252,36 @@ def gpus():
 
 # ---------------- budgets ----------------
 def apple_gpu_share(ram):
-    # macOS lets the GPU wire roughly 2/3 of unified memory on smaller machines
-    # and roughly 3/4 above 36 GB (the default iogpu.wired_limit_mb).
+    # Fallback only: macOS lets the GPU wire roughly 2/3 of unified memory on
+    # smaller machines and roughly 3/4 above 36 GB.
     return ram * (0.75 if ram > 36 else 0.66)
+
+
+def _metal_working_set():
+    """Metal's recommendedMaxWorkingSetSize in bytes, read through MLX if installed."""
+    try:
+        import mlx.core as mx
+
+        info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+        return int(info["max_recommended_working_set_size"]) or None
+    except Exception:
+        return None
+
+
+def apple_gpu_limit(ram):
+    """(GB the GPU may use, where that figure came from).
+
+    A limit the user raised with `sysctl iogpu.wired_limit_mb` wins; then
+    Metal's own recommendation (about 74% of RAM on a 24 GB M4 Pro, where
+    the 2/3 rule says 66%); the rule is the last resort.
+    """
+    wired = _run([SYSCTL, "-n", "iogpu.wired_limit_mb"]).strip()
+    if wired.isdigit() and int(wired) > 0:
+        return int(wired) / 1024, "iogpu.wired_limit_mb"
+    metal = _metal_working_set()
+    if metal:
+        return metal / GB, "Metal"
+    return apple_gpu_share(ram), "estimate"
 
 
 def _round(x):
@@ -279,12 +306,14 @@ def probe():
     )
 
     if system == "Darwin" and machine == "arm64":
+        limit, source = apple_gpu_limit(ram)
         info.update(
             accelerator="apple-unified",
             mlx_ok=True,
-            gpu=dict(name=info["cpu"], vram_gb=round(apple_gpu_share(ram), 1), kind="apple"),
+            gpu=dict(name=info["cpu"], vram_gb=round(limit, 1), kind="apple"),
+            gpu_limit_source=source,
         )
-        info["fast_gb"] = round(apple_gpu_share(ram) - 2.0, 1)  # leave room for macOS + apps
+        info["fast_gb"] = round(limit - 2.0, 1)  # leave room for macOS + apps
         info["spill_gb"] = info["fast_gb"]  # unified: there is no slower pool to spill to
     else:
         cands = [

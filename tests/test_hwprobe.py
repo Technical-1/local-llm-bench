@@ -186,3 +186,24 @@ def test_free_budget_discrete_and_unified():
     mac = {"accelerator": "apple-unified", "gpu": {}, "fast_gb": 17.8, "ram_free_gb": 8.1}
     assert hwprobe.free_budget(mac) == 8.1
     assert hwprobe.free_budget({"accelerator": "cpu", "gpu": None, "fast_gb": 0.0}) is None
+
+
+def _fake_apple(monkeypatch, wired="0", metal=None):
+    monkeypatch.setattr(hwprobe, "_run", lambda cmd, **k: wired if "iogpu" in cmd[-1] else "")
+    monkeypatch.setattr(hwprobe, "_metal_working_set", lambda: metal)
+
+
+def test_apple_limit_prefers_a_user_raised_wired_limit(monkeypatch):
+    _fake_apple(monkeypatch, wired="20480", metal=19_069_665_280)
+    assert hwprobe.apple_gpu_limit(24.0) == (20.0, "iogpu.wired_limit_mb")
+
+
+def test_apple_limit_reads_metal_when_the_default_applies(monkeypatch):
+    _fake_apple(monkeypatch, metal=19_069_665_280)  # recorded on a 24 GB M4 Pro
+    gb, source = hwprobe.apple_gpu_limit(24.0)
+    assert source == "Metal" and gb == pytest.approx(17.76, abs=0.01)
+
+
+def test_apple_limit_falls_back_to_the_rule(monkeypatch):
+    _fake_apple(monkeypatch)
+    assert hwprobe.apple_gpu_limit(16.0) == (pytest.approx(16 * 0.66), "estimate")

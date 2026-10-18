@@ -29,8 +29,11 @@ def estimate_runtime(hw: dict) -> str:
 
 def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX) -> int:
     gpu = hw["gpu"]
+    source = f", limit from {hw['gpu_limit_source']}" if hw.get("gpu_limit_source") else ""
     gpu_line = (
-        f"{gpu['name']} ({gpu['vram_gb']:.1f} GB usable)" if gpu else "none detected - CPU only"
+        f"{gpu['name']} ({gpu['vram_gb']:.1f} GB usable{source})"
+        if gpu
+        else "none detected - CPU only"
     )
     print("== This machine ==")
     print(f"  OS        {hw['os']} ({hw['arch']})")

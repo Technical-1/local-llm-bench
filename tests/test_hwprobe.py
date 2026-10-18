@@ -359,3 +359,90 @@ def test_ryzen_ai_max_is_budgeted_as_shared_memory(monkeypatch, carve, ram, fast
     assert hw["gpu"]["name"] == "AMD Radeon(TM) 8060S Graphics"
     assert hw["fast_gb"] == fast and hw["spill_gb"] == spill
     assert any("Ryzen AI Max" in n for n in hw["notes"])
+
+
+def test_probe_reads_free_ram_on_this_machine():
+    # Runs for real on the Windows, macOS and Linux CI runners, so the
+    # GlobalMemoryStatusEx, vm_stat and /proc/meminfo paths are each exercised.
+    hw = hwprobe.probe()
+    assert hw["ram_free_gb"] is not None
+    assert 0 < hw["ram_free_gb"] <= hw["ram_gb"]
+
+
+class FakeWinreg:
+    """Enough of the winreg module to replay a recorded display-adapter key.
+
+    ``tree`` maps subkey name to its values; a value of None means the key
+    exists but cannot be opened (like the real 'Properties' subkey).
+    """
+
+    HKEY_LOCAL_MACHINE = "HKLM"
+
+    def __init__(self, tree):
+        self.tree = tree
+
+    def OpenKey(self, parent, sub):
+        if parent == self.HKEY_LOCAL_MACHINE:
+            return "root"
+        if self.tree[sub] is None:
+            raise PermissionError(sub)
+        return sub
+
+    def QueryInfoKey(self, key):
+        return (len(self.tree), 0, 0)
+
+    def EnumKey(self, key, i):
+        return list(self.tree)[i]
+
+    def QueryValueEx(self, key, name):
+        try:
+            return self.tree[key][name], 0
+        except KeyError:
+            raise FileNotFoundError(name) from None
+
+
+# Shaped like a real desktop: a discrete card with the 64-bit size, an older
+# driver that only writes the 32-bit binary size, an adapter with no size at
+# all, and the non-adapter subkeys Windows keeps alongside them.
+ADAPTER_KEY = {
+    "0000": {
+        "DriverDesc": "NVIDIA GeForce RTX 4070",
+        "HardwareInformation.qwMemorySize": 12 * 1024**3,
+    },
+    "0001": {
+        "DriverDesc": "AMD Radeon RX 6600",
+        "HardwareInformation.MemorySize": (2 * 1024**3).to_bytes(4, "little"),
+    },
+    "0002": {"DriverDesc": "Microsoft Hyper-V Video"},
+    "Configuration": {},
+    "Properties": None,
+}
+
+
+def test_windows_registry_reads_64_and_32_bit_vram(monkeypatch):
+    monkeypatch.setitem(__import__("sys").modules, "winreg", FakeWinreg(ADAPTER_KEY))
+    gpus = hwprobe._windows_registry_gpus()
+    assert [(g["name"], g["vram_gb"], g["kind"]) for g in gpus] == [
+        ("NVIDIA GeForce RTX 4070", 12.0, "nvidia"),
+        ("AMD Radeon RX 6600", 2.0, "amd"),
+    ]
+    assert all(g["from_registry"] for g in gpus)
+
+
+def test_windows_gpus_prefer_nvidia_smi_and_add_other_registry_cards(monkeypatch):
+    monkeypatch.setattr(hwprobe.platform, "system", lambda: "Windows")
+    monkeypatch.setitem(__import__("sys").modules, "winreg", FakeWinreg(ADAPTER_KEY))
+    smi = [{"name": "NVIDIA GeForce RTX 4070", "vram_gb": 11.99, "free_gb": 9.0, "kind": "nvidia"}]
+    monkeypatch.setattr(hwprobe, "_nvidia_smi", lambda: smi)
+    gpus = hwprobe.gpus()
+    # the RTX comes once, from nvidia-smi (it knows free VRAM); the AMD card is added
+    assert [g["name"] for g in gpus] == ["NVIDIA GeForce RTX 4070", "AMD Radeon RX 6600"]
+    assert gpus[0]["free_gb"] == 9.0
+
+
+def test_windows_doctor_dumps_the_registry_values(monkeypatch):
+    monkeypatch.setitem(__import__("sys").modules, "winreg", FakeWinreg(ADAPTER_KEY))
+    raw = hwprobe._windows_registry_raw()
+    assert "0000 DriverDesc = 'NVIDIA GeForce RTX 4070'" in raw
+    assert f"0000 HardwareInformation.qwMemorySize = {12 * 1024**3}" in raw
+    assert "0002 DriverDesc = 'Microsoft Hyper-V Video'" in raw

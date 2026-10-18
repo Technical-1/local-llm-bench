@@ -48,7 +48,7 @@ def test_apple_gpu_share(ram, share):
 
 def test_nvidia_smi_output_is_parsed(monkeypatch):
     monkeypatch.setattr(hwprobe.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hwprobe.shutil, "which", lambda _: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(hwprobe, "find_exe", lambda *a, **k: "/usr/bin/nvidia-smi")
     monkeypatch.setattr(hwprobe, "_run", lambda *a, **k: "NVIDIA GeForce RTX 4070, 12282\n")
     assert hwprobe._nvidia_smi() == [
         {"name": "NVIDIA GeForce RTX 4070", "vram_gb": 12282 / 1024, "kind": "nvidia"}
@@ -58,14 +58,19 @@ def test_nvidia_smi_output_is_parsed(monkeypatch):
 def test_windows_prefers_system32_nvidia_smi(monkeypatch, tmp_path):
     sys32 = tmp_path / "System32"
     sys32.mkdir()
-    (sys32 / "nvidia-smi.exe").write_text("")
+    exe = sys32 / "nvidia-smi.exe"
+    exe.write_text("")
+    exe.chmod(0o755)
     seen = []
     monkeypatch.setattr(hwprobe.platform, "system", lambda: "Windows")
     monkeypatch.setenv("SystemRoot", str(tmp_path))
-    monkeypatch.setattr(hwprobe.shutil, "which", lambda _: "C:/project/nvidia-smi.exe")
     monkeypatch.setattr(hwprobe, "_run", lambda cmd, **k: seen.append(cmd[0]) or "")
     hwprobe._nvidia_smi()
-    assert seen == [str(sys32 / "nvidia-smi.exe")]
+    assert seen == [str(exe)]
+
+
+def test_run_refuses_a_bare_command_name():
+    assert hwprobe._run(["nvidia-smi"]) == ""
 
 
 def test_wmi_fallback_flags_the_4gb_cap(monkeypatch):

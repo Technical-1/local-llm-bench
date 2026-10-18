@@ -102,7 +102,7 @@ def test_ollama_status_when_absent(monkeypatch):
         raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(httpx, "get", refuse)
-    monkeypatch.setattr(runners.shutil, "which", lambda _: None)
+    monkeypatch.setattr(runners, "find_exe", lambda *a, **k: None)
     assert runners.ollama_status() == (False, set())
 
 

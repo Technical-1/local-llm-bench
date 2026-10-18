@@ -8,11 +8,12 @@ Linux, where it does not exist.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from ._exe import find_exe
 
 
 def _ollama_url(host: str | None) -> str:
@@ -79,7 +80,9 @@ def ollama_status() -> tuple[bool, set[str]]:
         return True, {m["name"] for m in r.json().get("models", [])}
     except Exception:
         pass
-    exe = shutil.which("ollama")
+    local = os.environ.get("LOCALAPPDATA", "")
+    known = (os.path.join(local, "Programs", "Ollama", "ollama.exe"),) if local else ()
+    exe = find_exe("ollama", known)
     if not exe:
         return False, set()
     try:

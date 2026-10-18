@@ -16,13 +16,17 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 
+from ._exe import find_exe, windows_dir
+
 GB = 1024**3
+SYSCTL = "/usr/sbin/sysctl"  # macOS ships it here; never resolved through PATH
 
 
 def _run(cmd, timeout=10):
+    if not cmd or not os.path.isabs(cmd[0]):
+        return ""  # only ever run a resolved, absolute executable
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
     except Exception:
@@ -34,7 +38,7 @@ def ram_gb():
     system = platform.system()
     try:
         if system == "Darwin":
-            return int(_run(["sysctl", "-n", "hw.memsize"]).strip()) / GB
+            return int(_run([SYSCTL, "-n", "hw.memsize"]).strip()) / GB
         if system == "Windows":
 
             class MEMORYSTATUSEX(ctypes.Structure):
@@ -64,7 +68,7 @@ def ram_gb():
 def cpu_name():
     system = platform.system()
     if system == "Darwin":
-        return _run(["sysctl", "-n", "machdep.cpu.brand_string"]).strip() or platform.processor()
+        return _run([SYSCTL, "-n", "machdep.cpu.brand_string"]).strip() or platform.processor()
     if system == "Windows":
         try:
             import winreg
@@ -96,15 +100,9 @@ def _kind(name):
 
 
 def _nvidia_smi():
-    # On Windows, PATH lookup can also search the current directory, so prefer
-    # the copy the NVIDIA driver installs into System32.
-    exe = None
-    if platform.system() == "Windows":
-        sys32 = os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe"
-        )
-        exe = sys32 if os.path.isfile(sys32) else None
-    exe = exe or shutil.which("nvidia-smi")
+    # On Windows the driver installs it into System32; prefer that copy.
+    known = (windows_dir("System32", "nvidia-smi.exe"),) if platform.system() == "Windows" else ()
+    exe = find_exe("nvidia-smi", known)
     if not exe:
         return []
     out = _run([exe, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
@@ -149,7 +147,7 @@ def _windows_registry_gpus():
 def _windows_wmi_gpus():
     out = _run(
         [
-            "powershell",
+            windows_dir("System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
             "-NoProfile",
             "-Command",
             "Get-CimInstance Win32_VideoController"

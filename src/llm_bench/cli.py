@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import __version__, hwprobe, runners
 from .bench import ResultStore, run_models
-from .registry import BY_NAME, MODELS, Model
+from .registry import BY_NAME, DEFAULT_CTX, MODELS, Model
 from .report import render
 
 VERDICT = {"fast": "fits - fast", "slow": "runs - slow (CPU offload)", "no": "too big"}
@@ -22,7 +22,12 @@ def _utf8_console() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-def cmd_check(hw: dict, ollama_ok: bool, tags: set[str]) -> int:
+def estimate_runtime(hw: dict) -> str:
+    """Which build the memory estimate assumes: MLX's on Apple Silicon, else Ollama's."""
+    return "mlx" if hw["mlx_ok"] else "ollama"
+
+
+def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX) -> int:
     gpu = hw["gpu"]
     gpu_line = (
         f"{gpu['name']} ({gpu['vram_gb']:.1f} GB usable)" if gpu else "none detected - CPU only"
@@ -43,14 +48,16 @@ def cmd_check(hw: dict, ollama_ok: bool, tags: set[str]) -> int:
     for note in hw["notes"]:
         print(f"  note: {note}")
 
-    print("\n== Models ==")
+    rt = estimate_runtime(hw)
+    print(f"\n== Models (estimated at {ctx:,} tokens of context, {rt} weights) ==")
     print(f"  {'model':<20} {'needs':>7}  {'verdict':<27} {'pulled':<7} next step")
-    for m in sorted(MODELS, key=lambda m: m.need_gb):
-        verdict = hwprobe.fit(m.need_gb, hw)
+    for m in sorted(MODELS, key=lambda m: m.need_gb(ctx, rt)):
+        need = m.need_gb(ctx, rt)
+        verdict = hwprobe.fit(need, hw)
         pulled = runners.ollama_has(tags, m.ollama)
         step = f"ollama pull {m.ollama}" if verdict != "no" and not pulled else ""
         print(
-            f"  {m.name:<20} {m.need_gb:>5.1f}GB  {VERDICT[verdict]:<27} "
+            f"  {m.name:<20} {need:>5.1f}GB  {VERDICT[verdict]:<27} "
             f"{'yes' if pulled else '-':<7} {step}"
         )
     print("\nNext: pull one or more models marked 'fits', then  llm-bench run")
@@ -62,7 +69,8 @@ def _select(spec: str, include_slow: bool, hw: dict) -> list[Model]:
         return list(MODELS)
     if spec == "fit":
         ok = {"fast", "slow"} if include_slow else {"fast"}
-        return [m for m in MODELS if hwprobe.fit(m.need_gb, hw) in ok]
+        rt = estimate_runtime(hw)
+        return [m for m in MODELS if hwprobe.fit(m.need_gb(DEFAULT_CTX, rt), hw) in ok]
     names = [n.strip() for n in spec.split(",") if n.strip()]
     unknown = [n for n in names if n not in BY_NAME]
     if unknown:

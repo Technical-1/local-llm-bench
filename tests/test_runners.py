@@ -38,9 +38,11 @@ def test_ollama_url_from_env(env, url):
 
 def test_registry_is_consistent():
     assert len(BY_NAME) == len(MODELS), "duplicate model names"
-    needs = [m.need_gb for m in MODELS]
-    assert BY_NAME["llama3.2-3b"].need_gb < BY_NAME["qwen3.5-9b"].need_gb < max(needs)
+    needs = [m.need_gb() for m in MODELS]
+    assert BY_NAME["llama3.2-3b"].need_gb() < BY_NAME["qwen3.5-9b"].need_gb() < max(needs)
     assert all(m.params_b > 0 and m.ollama and m.mlx for m in MODELS)
+    assert all(0 < m.active_b <= m.params_b for m in MODELS)
+    assert all(m.kv_layers and m.kv_heads and m.head_dim and m.max_ctx for m in MODELS)
 
 
 class _Resp:

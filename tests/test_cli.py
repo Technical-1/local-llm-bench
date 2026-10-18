@@ -169,3 +169,12 @@ def test_check_json_is_machine_readable(fake_machine, tmp_path, capsys):
     assert data["context_tokens"] == 16384 and data["estimate_runtime"] == "ollama"
     by = {m["model"]: m for m in data["models"]}
     assert by["qwen2.5-7b"]["pulled"] and by["llama3.3-70b"]["verdict"] == "no"
+
+
+def test_doctor_prints_raw_sources_and_the_probe(fake_machine, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(hwprobe, "raw_sources", lambda: [("nvidia-smi", "RTX 4070, 12282")])
+    monkeypatch.setattr(runners, "ollama_get", lambda path: "{}")
+    assert cli.main(["--out", str(tmp_path), "doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "--- nvidia-smi\nRTX 4070, 12282" in out
+    assert '"fast_gb": 11.5' in out and "/api/ps: {}" in out

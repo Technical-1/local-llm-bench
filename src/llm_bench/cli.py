@@ -1,9 +1,10 @@
-"""Command line: ``llm-bench check | run | report | validate``."""
+"""Command line: ``llm-bench check | run | report | validate | doctor``."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -197,6 +198,21 @@ def cmd_run(args, hw: dict, ollama_ok: bool, tags: set[str]) -> int:
     return cmd_report(args, hw)
 
 
+def cmd_doctor(hw: dict) -> int:
+    """Raw probe output beside the conclusions, ready to paste into an issue."""
+    print(f"llm-bench {__version__} doctor. Paste everything below into a GitHub issue.\n")
+    for label, text in hwprobe.raw_sources():
+        print(f"--- {label}")
+        print(text.strip() if text and text.strip() else "(empty)")
+    print("--- ollama")
+    print(f"OLLAMA_HOST set: {'yes' if os.environ.get('OLLAMA_HOST') else 'no'}")
+    for path in ("/api/version", "/api/tags", "/api/ps"):
+        print(f"{path}: {runners.ollama_get(path)}")
+    print("--- what llm-bench concluded (probe)")
+    print(json.dumps(hw, indent=2))
+    return 0
+
+
 def cmd_validate(path: Path) -> int:
     """Check a results file against the result format; exit 1 if anything is wrong."""
     if not path.exists():
@@ -281,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         help="auto = both on Apple Silicon with mlx-lm installed, else ollama",
     )
     sub.add_parser("report", help="re-render the scorecard from saved results")
+    sub.add_parser("doctor", help="print raw hardware and Ollama details for a bug report")
     validate = sub.add_parser("validate", help="check a results file against the result format")
     validate.add_argument("file", nargs="?", type=Path, help="default: <out>/results.json")
     args = ap.parse_args(argv)
@@ -293,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
     (args.out / "hardware.json").write_text(json.dumps(hw, indent=2), encoding="utf-8")
     if args.cmd == "report":
         return cmd_report(args, hw)
+    if args.cmd == "doctor":
+        return cmd_doctor(hw)
     ollama_ok, tags = runners.ollama_status()
     if args.cmd == "check":
         if args.ctx <= 0:

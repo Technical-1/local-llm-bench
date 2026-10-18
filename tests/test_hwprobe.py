@@ -237,3 +237,21 @@ def test_override_ram_on_a_mac_regrades_unified_memory():
 
 def test_no_override_returns_the_detected_hardware(nvidia_hw):
     assert hwprobe.override(nvidia_hw) is nvidia_hw
+
+
+def test_raw_sources_on_linux_include_sysfs(monkeypatch, tmp_path):
+    dev = tmp_path / "card1" / "device"
+    dev.mkdir(parents=True)
+    (dev / "vendor").write_text("0x1002\n")
+    (dev / "mem_info_vram_total").write_text("17163091968\n")
+    monkeypatch.setattr(hwprobe.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hwprobe, "find_exe", lambda *a, **k: None)
+    monkeypatch.setattr(hwprobe, "DRM", str(tmp_path))
+    raw = dict(hwprobe.raw_sources())
+    assert raw[f"{tmp_path}/card1/device/vendor"] == "0x1002"
+    assert raw[f"{tmp_path}/card1/device/mem_info_vram_total"] == "17163091968"
+
+
+def test_raw_sources_never_include_the_hostname():
+    text = "\n".join(t for _, t in hwprobe.raw_sources())
+    assert hwprobe.platform.node() not in text

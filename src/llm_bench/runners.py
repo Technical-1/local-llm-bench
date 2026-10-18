@@ -104,6 +104,16 @@ def ollama_status() -> tuple[bool, set[str]]:
         return True, set()
 
 
+def ollama_get(path: str) -> str:
+    """Raw JSON from an Ollama endpoint, or why it could not be read."""
+    try:
+        import httpx
+
+        return httpx.get(f"{OLLAMA_URL}{path}", timeout=5).text.strip()
+    except Exception as e:
+        return f"(unreachable: {type(e).__name__})"
+
+
 def ollama_has(tags: set[str], tag: str) -> bool:
     """True if pulled. An untagged pull is listed as ``name:latest``."""
     return tag in tags or (":" not in tag and f"{tag}:latest" in tags)

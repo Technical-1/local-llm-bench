@@ -250,6 +250,108 @@ def gpus():
     return found
 
 
+# ---------------- raw output, for bug reports ----------------
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
+def _windows_registry_raw():
+    lines = []
+    try:
+        import winreg
+
+        base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+        for i in range(winreg.QueryInfoKey(root)[0]):
+            sub = winreg.EnumKey(root, i)
+            if not sub.isdigit():
+                continue
+            k = winreg.OpenKey(root, sub)
+            for name in (
+                "DriverDesc",
+                "HardwareInformation.qwMemorySize",
+                "HardwareInformation.MemorySize",
+            ):
+                try:
+                    lines.append(f"{sub} {name} = {winreg.QueryValueEx(k, name)[0]!r}")
+                except OSError:
+                    pass
+    except Exception as e:
+        lines.append(f"(registry unreadable: {e})")
+    return "\n".join(lines)
+
+
+def raw_sources():
+    """(label, raw text) for every source probe() reads on this OS.
+
+    Nothing that identifies the person: no hostname, user name or paths
+    under their home folder, so the output can be pasted into a public issue.
+    """
+    system = platform.system()
+    out = [("platform", f"{system} {platform.release()} {platform.machine()}")]
+    smi = find_exe(
+        "nvidia-smi",
+        (windows_dir("System32", "nvidia-smi.exe"),) if system == "Windows" else (),
+    )
+    if smi:
+        out.append(
+            (
+                "nvidia-smi",
+                _run(
+                    [
+                        smi,
+                        "--query-gpu=name,memory.total,memory.free",
+                        "--format=csv,noheader,nounits",
+                    ]
+                ),
+            )
+        )
+    if system == "Darwin":
+        for key in ("hw.memsize", "machdep.cpu.brand_string", "iogpu.wired_limit_mb"):
+            out.append((f"sysctl {key}", _run([SYSCTL, "-n", key]).strip()))
+        out.append(("vm_stat", _run([VM_STAT])))
+        metal = _metal_working_set()
+        out.append(("Metal recommended working set (bytes)", str(metal)))
+    elif system == "Windows":
+        out.append(("display adapter registry", _windows_registry_raw()))
+        out.append(
+            (
+                "WMI Win32_VideoController",
+                _run(
+                    [
+                        windows_dir("System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+                        "-NoProfile",
+                        "-Command",
+                        "Get-CimInstance Win32_VideoController"
+                        " | Select-Object Name,AdapterRAM | ConvertTo-Json",
+                    ],
+                    timeout=20,
+                ),
+            )
+        )
+    else:
+        meminfo = _read_text("/proc/meminfo") or ""
+        out.append(("/proc/meminfo", "\n".join(ln for ln in meminfo.splitlines() if "Mem" in ln)))
+        for card in sorted(os.listdir(DRM)) if os.path.isdir(DRM) else []:
+            if not re.fullmatch(r"card\d+", card):
+                continue
+            for name in (
+                "vendor",
+                "device",
+                "product_name",
+                "mem_info_vram_total",
+                "mem_info_vram_used",
+            ):
+                val = _read_text(f"{DRM}/{card}/device/{name}")
+                if val is not None:
+                    out.append((f"{DRM}/{card}/device/{name}", val))
+    return out
+
+
 # ---------------- budgets ----------------
 def apple_gpu_share(ram):
     # Fallback only: macOS lets the GPU wire roughly 2/3 of unified memory on

@@ -42,6 +42,9 @@ also through [MLX](https://github.com/ml-explore/mlx) on Apple Silicon Macs.
   range.
 - Measured peak memory, and for Ollama how much of the model actually ran on
   the GPU. A prompt the runtime cut short is flagged, not silently scored.
+- Each model is measured alone. Every request to a model uses one context
+  window, so Ollama doesn't reload it mid-run, and each model is unloaded
+  before the next one starts.
 - On a Mac, the same model can run through both MLX and Ollama, and the
   scorecard puts the two side by side.
 - A Markdown scorecard (overall ranking at 70% quality and 30% speed, quality
@@ -209,7 +212,7 @@ from those tools.
 ```
 llm-bench/
 ├── src/llm_bench/
-│   ├── cli.py         # the check, run and report commands
+│   ├── cli.py         # the check, run, report, validate and doctor commands
 │   ├── hwprobe.py     # RAM, GPU and VRAM detection, memory budgets, fit verdicts
 │   ├── registry.py    # the model table and the memory estimate
 │   ├── estimate.py    # the speed estimate and the GPU bandwidth table

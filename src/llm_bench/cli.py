@@ -1,4 +1,4 @@
-"""Command line: ``llm-bench check | run | report``."""
+"""Command line: ``llm-bench check | run | report | validate``."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, estimate, hwprobe, runners
+from . import __version__, estimate, hwprobe, runners, schema
 from .bench import ResultStore, run_models
 from .registry import BY_NAME, DEFAULT_CTX, MODELS, Model
 from .report import render
@@ -71,6 +71,20 @@ def check_models(hw: dict, tags: set[str], ctx: int, rows=()) -> list[dict]:
 
 def _ctx_label(n: int) -> str:
     return "-" if n <= 0 else f"{n // 1024}k"
+
+
+def check_json(hw: dict, ollama_ok: bool, tags: set[str], ctx: int, rows=()) -> dict:
+    """Everything check prints, as data for scripts and other tools."""
+    return {
+        "schema_version": schema.SCHEMA_VERSION,
+        "tool_version": __version__,
+        "context_tokens": ctx,
+        "estimate_runtime": estimate_runtime(hw),
+        "hardware": hw,
+        "free_now_gb": hwprobe.free_budget(hw),
+        "runtimes": {"ollama": ollama_ok, "mlx": hw["mlx_ok"] and runners.mlx_installed()},
+        "models": check_models(hw, tags, ctx, rows),
+    }
 
 
 def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX, rows=()) -> int:
@@ -173,7 +187,7 @@ def cmd_run(args, hw: dict, ollama_ok: bool, tags: set[str]) -> int:
     models = _select(args.models, args.include_slow, hw)
     print(f"Runtime: {runtime} | models: {', '.join(m.name for m in models) or 'none'}")
     store = ResultStore(args.out / "results.json")
-    ran = run_models(models, runtime, store, tags)
+    ran = run_models(models, runtime, store, tags, hw)
     print(
         f"\nRan {ran} model x runtime configuration(s); {len(store.rows)} row(s) in {store.path}"
     )
@@ -181,6 +195,25 @@ def cmd_run(args, hw: dict, ollama_ok: bool, tags: set[str]) -> int:
         print("Nothing ran. See  llm-bench check  for what to download.")
         return 1
     return cmd_report(args, hw)
+
+
+def cmd_validate(path: Path) -> int:
+    """Check a results file against the result format; exit 1 if anything is wrong."""
+    if not path.exists():
+        raise SystemExit(f"No results at {path}. Run  llm-bench run  first.")
+    if path.stat().st_size > schema.MAX_FILE_BYTES:
+        print(f"{path}: larger than {schema.MAX_FILE_BYTES // 1024} KiB")
+        return 1
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        print(f"{path}: not valid JSON ({e})")
+        return 1
+    errs = schema.validate_rows(rows)
+    for e in errs:
+        print(e)
+    print(f"{path}: {len(rows)} row(s), " + (f"{len(errs)} problem(s)" if errs else "all valid"))
+    return 1 if errs else 0
 
 
 def cmd_report(args, hw: dict) -> int:
@@ -229,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="GB",
         help="grade this much system RAM (unified memory on a Mac) instead of the detected amount",
     )
+    check.add_argument("--json", action="store_true", help="print the result as JSON")
     run = sub.add_parser("run", help="benchmark models, then write the scorecard")
     run.add_argument(
         "--models",
@@ -247,7 +281,12 @@ def main(argv: list[str] | None = None) -> int:
         help="auto = both on Apple Silicon with mlx-lm installed, else ollama",
     )
     sub.add_parser("report", help="re-render the scorecard from saved results")
+    validate = sub.add_parser("validate", help="check a results file against the result format")
+    validate.add_argument("file", nargs="?", type=Path, help="default: <out>/results.json")
     args = ap.parse_args(argv)
+
+    if args.cmd == "validate":
+        return cmd_validate(args.file or args.out / "results.json")
 
     hw = hwprobe.probe()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -259,7 +298,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.ctx <= 0:
             raise SystemExit("--ctx must be a positive number of tokens.")
         graded = hwprobe.override(hw, vram=args.vram, ram=args.ram)
-        return cmd_check(graded, ollama_ok, tags, args.ctx, rows=_load_rows(args.out))
+        rows = _load_rows(args.out)
+        if args.json:
+            print(json.dumps(check_json(graded, ollama_ok, tags, args.ctx, rows), indent=2))
+            return 0
+        return cmd_check(graded, ollama_ok, tags, args.ctx, rows=rows)
     return cmd_run(args, hw, ollama_ok, tags)
 
 

@@ -25,3 +25,7 @@ jobs:
       # The real hardware probe on a real runner: proves detection runs
       # (registry / WMI on Windows, sysctl on macOS, /proc on Linux) without crashing.
       - run: llm-bench --out ci-results check
+      # check --json must stay parseable JSON on every OS (bash, so Windows
+      # does not re-encode the pipe as UTF-16).
+      - run: llm-bench --out ci-results check --json | python -c "import json, sys; json.load(sys.stdin)"
+        shell: bash

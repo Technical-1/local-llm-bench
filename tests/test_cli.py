@@ -145,3 +145,27 @@ def test_check_with_a_vram_override(fake_machine, tmp_path, capsys):
     assert "Graded for --vram 24 GB" in out
     line = next(ln for ln in out.splitlines() if "qwen2.5-32b " in ln)
     assert "fits - fast" in line
+
+
+def test_run_writes_rows_that_validate(fake_machine, tmp_path, capsys):
+    cli.main(["--out", str(tmp_path), "run"])
+    row = json.loads((tmp_path / "results.json").read_text())[0]
+    assert row["hardware"]["gpu"] == "NVIDIA GeForce RTX 4070"
+    capsys.readouterr()
+    assert cli.main(["--out", str(tmp_path), "validate"]) == 0
+    assert "all valid" in capsys.readouterr().out
+
+
+def test_validate_fails_on_a_bad_file(tmp_path, capsys):
+    path = tmp_path / "results.json"
+    path.write_text('[{"model": "x", "runtime": "ollama"}]')
+    assert cli.main(["validate", str(path)]) == 1
+    assert "llm-bench 0.1" in capsys.readouterr().out
+
+
+def test_check_json_is_machine_readable(fake_machine, tmp_path, capsys):
+    cli.main(["--out", str(tmp_path), "check", "--json", "--ctx", "16384"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["context_tokens"] == 16384 and data["estimate_runtime"] == "ollama"
+    by = {m["model"]: m for m in data["models"]}
+    assert by["qwen2.5-7b"]["pulled"] and by["llama3.3-70b"]["verdict"] == "no"

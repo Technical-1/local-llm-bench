@@ -6,7 +6,7 @@ import json
 import statistics
 from pathlib import Path
 
-from . import runners
+from . import runners, schema
 from .registry import Model
 from .tasks import CATEGORIES, TASKS
 
@@ -143,7 +143,7 @@ class ResultStore:
 
 
 def run_models(
-    models: list[Model], runtime: str, store: ResultStore, tags: set[str], log=print
+    models: list[Model], runtime: str, store: ResultStore, tags: set[str], hw: dict, log=print
 ) -> int:
     """Benchmark each model on the chosen runtime(s); skip what isn't downloaded."""
     ran = 0
@@ -152,14 +152,14 @@ def run_models(
             repo = next((r for r in (m.mlx, m.mlx_alt) if r and runners.mlx_downloaded(r)), None)
             if repo:
                 log(f"\n=== {m.name} [mlx: {repo}] ===")
-                store.put(bench_one(m, "mlx", repo, log))
+                store.put(schema.stamp(bench_one(m, "mlx", repo, log), hw))
                 ran += 1
             else:
                 log(f"--- skip {m.name} [mlx]: not downloaded (huggingface-cli download {m.mlx})")
         if runtime in ("ollama", "both"):
             if runners.ollama_has(tags, m.ollama):
                 log(f"\n=== {m.name} [ollama: {m.ollama}] ===")
-                store.put(bench_one(m, "ollama", m.ollama, log))
+                store.put(schema.stamp(bench_one(m, "ollama", m.ollama, log), hw))
                 ran += 1
             else:
                 log(f"--- skip {m.name} [ollama]: not pulled (ollama pull {m.ollama})")

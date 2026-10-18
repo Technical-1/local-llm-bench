@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-bench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Find out which local LLMs your computer can run, then benchmark their quality, speed and memory"
 readme = "README.md"
 requires-python = ">=3.10"

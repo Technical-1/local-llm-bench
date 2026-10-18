@@ -58,6 +58,7 @@ class Generation:
     prompt_tokens: int = 0
     num_ctx: int = 0  # context window requested (Ollama only)
     truncated: bool = False  # the runtime saw much less of the prompt than was sent
+    gpu_share: float | None = None  # measured share of the model on the GPU; None = unknown
 
 
 def strip_thinking(text: str) -> str:
@@ -105,17 +106,25 @@ def ollama_has(tags: set[str], tag: str) -> bool:
     return tag in tags or (":" not in tag and f"{tag}:latest" in tags)
 
 
-def _ollama_resident_gb(tag: str) -> float:
+def _ollama_resident(tag: str) -> tuple[float, float | None]:
+    """(GB loaded, share of it on the GPU) from /api/ps; (0, None) if unknown.
+
+    The share is measured, not predicted: below 1.0 means Ollama put some
+    layers on the CPU, which is why a model runs slowly.
+    """
     try:
         import httpx
 
-        for m in httpx.get(f"{OLLAMA_URL}/api/ps", timeout=5).json().get("models", []):
-            name = m.get("name", "")
-            if name == tag or name.split(":")[0] == tag.split(":")[0]:
-                return m.get("size", 0) / 1e9
+        models = httpx.get(f"{OLLAMA_URL}/api/ps", timeout=5).json().get("models", [])
     except Exception:
-        pass
-    return 0.0
+        return 0.0, None
+    exact = [m for m in models if m.get("name") == tag]
+    family = [m for m in models if m.get("name", "").split(":")[0] == tag.split(":")[0]]
+    for m in exact or family:
+        size = m.get("size", 0)
+        share = m["size_vram"] / size if size and "size_vram" in m else None
+        return size / 1e9, share
+    return 0.0, None
 
 
 def ollama_num_ctx(prompt: str) -> int:
@@ -162,13 +171,15 @@ def run_ollama(tag: str, prompt: str) -> Generation:
     # thinking text so we score the model's answer, not the runtime's quirk.
     text = (d.get("response") or "").strip() or (d.get("thinking") or "")
     load = d.get("load_duration", 0)
+    resident_gb, gpu_share = _ollama_resident(tag)
     return Generation(
         text=text,
         load_s=load / ns,
         ttft_s=(load + d.get("prompt_eval_duration", 0)) / ns,
         prompt_tps=p_cnt / (p_dur / ns),
         gen_tps=e_cnt / (e_dur / ns),
-        peak_gb=_ollama_resident_gb(tag),
+        peak_gb=resident_gb,
+        gpu_share=gpu_share,
         prompt_tokens=p_cnt,
         num_ctx=num_ctx,
         truncated=looks_truncated(prompt, p_cnt),
@@ -228,4 +239,5 @@ def run_mlx(repo: str, prompt: str) -> Generation:
         gen_tps=gen_tps,
         peak_gb=mx.get_peak_memory() / 1e9,
         prompt_tokens=prompt_tokens,
+        gpu_share=1.0,  # MLX runs entirely on the Apple GPU
     )

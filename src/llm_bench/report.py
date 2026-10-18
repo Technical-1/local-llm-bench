@@ -20,6 +20,12 @@ def _pct(x: float) -> str:
     return f"{round(x * 100)}%"
 
 
+def _gpu_share(perf: dict) -> str:
+    """Measured share of the model on the GPU; under 100% means CPU offload."""
+    share = perf.get("gpu_share")
+    return "-" if share is None else _pct(share)
+
+
 def machine_line(hw: dict) -> str:
     if not hw:
         return "hardware unknown"
@@ -74,14 +80,15 @@ def render(rows: list[dict], hw: dict) -> str:
         "",
         "## Performance",
         "",
-        "| Model | Runtime | Load s | TTFT s | Prompt tok/s | Gen tok/s | Peak GB |",
-        "|---|---|---|---|---|---|---|",
+        "| Model | Runtime | Load s | TTFT s | Prompt tok/s | Gen tok/s | Peak GB | On GPU |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in sorted(rows, key=lambda r: r["perf"]["gen_tps"], reverse=True):
         p = r["perf"]
         out.append(
             f"| {r['model']} | {r['runtime']} | {p['load_s']:.1f} | {p['ttft_s']:.2f} | "
-            f"{p['prompt_tps']:.0f} | {p['gen_tps']:.0f} | {p['peak_gb']:.1f} |"
+            f"{p['prompt_tps']:.0f} | {p['gen_tps']:.0f} | {p['peak_gb']:.1f} | "
+            f"{_gpu_share(p)} |"
         )
 
     cut = [r for r in rows if r.get("truncated_tasks")]

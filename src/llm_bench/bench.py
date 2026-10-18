@@ -23,6 +23,7 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
     gen_tps: list[float] = []
     details = []
     num_ctx = 0
+    gpu_shares: list[float] = []
     truncated: list[str] = []
     for task in TASKS:
         try:
@@ -35,6 +36,8 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
         load_s, ttft_s = max(load_s, g.load_s), max(ttft_s, g.ttft_s)
         peak_gb = max(peak_gb, g.peak_gb)
         num_ctx = max(num_ctx, g.num_ctx)
+        if g.gpu_share is not None:
+            gpu_shares.append(g.gpu_share)
         if g.truncated:
             truncated.append(task["id"])
         if g.prompt_tps:
@@ -68,6 +71,8 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
             "gen_tps": _avg(gen_tps),
             "peak_gb": round(peak_gb, 1),
             "num_ctx": num_ctx,
+            # the worst task: a long prompt can push layers off the GPU
+            "gpu_share": round(min(gpu_shares), 2) if gpu_shares else None,
         },
         "truncated_tasks": truncated,
         "details": details,

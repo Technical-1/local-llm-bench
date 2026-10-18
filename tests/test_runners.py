@@ -69,13 +69,15 @@ def test_run_ollama_converts_timings(monkeypatch):
     monkeypatch.setattr(
         httpx,
         "get",
-        lambda *a, **k: _Resp({"models": [{"name": "qwen2.5:7b", "size": 5_000_000_000}]}),
+        lambda *a, **k: _Resp(
+            {"models": [{"name": "qwen2.5:7b", "size": 5_000_000_000, "size_vram": 4_000_000_000}]}
+        ),
     )
     g = runners.run_ollama("qwen2.5:7b", "2+2?")
     assert g.text == "4"
     assert g.load_s == 2.0 and g.ttft_s == 2.5
     assert g.prompt_tps == 200.0 and g.gen_tps == 50.0
-    assert g.peak_gb == 5.0
+    assert g.peak_gb == 5.0 and g.gpu_share == 0.8
 
 
 def test_run_ollama_falls_back_to_thinking(monkeypatch):
@@ -151,3 +153,18 @@ def test_run_ollama_sends_num_ctx_and_flags_truncation(monkeypatch):
 )
 def test_looks_truncated(chars, tokens, cut):
     assert runners.looks_truncated("a" * chars, tokens) is cut
+
+
+def test_gpu_share_is_measured_from_api_ps(monkeypatch):
+    import httpx
+
+    ps = {
+        "models": [
+            {"name": "qwen2.5:32b", "size": 20_000_000_000, "size_vram": 10_000_000_000},
+            {"name": "qwen2.5:7b", "size": 5_000_000_000, "size_vram": 5_000_000_000},
+        ]
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(ps))
+    assert runners._ollama_resident("qwen2.5:32b") == (20.0, 0.5)  # exact tag, not the 7b
+    assert runners._ollama_resident("qwen2.5:7b") == (5.0, 1.0)
+    assert runners._ollama_resident("llama3.2:3b") == (0.0, None)

@@ -22,8 +22,10 @@ def fake_machine(monkeypatch, nvidia_hw):
         runners, "ollama_status", lambda: (True, {"qwen2.5:7b", "phi4-mini:latest"})
     )
     monkeypatch.setattr(runners, "mlx_installed", lambda: False)
+    monkeypatch.setattr(runners, "ollama_resident", lambda: [])
+    monkeypatch.setattr(runners, "unload_ollama", lambda tag: None)
 
-    def perfect_model(tag, prompt, max_tokens=None):
+    def perfect_model(tag, prompt, max_tokens=None, num_ctx=None):
         text = REFERENCE_ANSWERS.get(PROMPT_TO_ID.get(prompt), "one two three")
         return runners.Generation(text=text, gen_tps=40.0, peak_gb=5.2)
 
@@ -84,7 +86,7 @@ def test_report_without_results_says_so(fake_machine, tmp_path, capsys):
 
 
 def test_truncated_prompt_is_flagged_in_the_scorecard(fake_machine, tmp_path, monkeypatch):
-    def short_window(tag, prompt, max_tokens=None):
+    def short_window(tag, prompt, max_tokens=None, num_ctx=None):
         tid = PROMPT_TO_ID.get(prompt)
         return runners.Generation(
             text=REFERENCE_ANSWERS.get(tid, ""), gen_tps=40.0, truncated=tid == "longctx_needle"

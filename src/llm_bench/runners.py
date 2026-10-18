@@ -7,6 +7,7 @@ Linux, where it does not exist.
 
 from __future__ import annotations
 
+import gc
 import os
 import subprocess
 import time
@@ -114,6 +115,27 @@ def ollama_get(path: str) -> str:
         return f"(unreachable: {type(e).__name__})"
 
 
+def ollama_resident() -> list[str]:
+    """Tags Ollama currently holds in memory."""
+    try:
+        import httpx
+
+        return [m["name"] for m in httpx.get(f"{OLLAMA_URL}/api/ps", timeout=5).json()["models"]]
+    except Exception:
+        return []
+
+
+def unload_ollama(tag: str) -> None:
+    """Free the model now instead of after Ollama's 5-minute keep-alive, so it
+    does not hold memory while the next model is measured."""
+    try:
+        import httpx
+
+        httpx.post(f"{OLLAMA_URL}/api/generate", json={"model": tag, "keep_alive": 0}, timeout=60)
+    except Exception:
+        pass
+
+
 def ollama_has(tags: set[str], tag: str) -> bool:
     """True if pulled. An untagged pull is listed as ``name:latest``."""
     return tag in tags or (":" not in tag and f"{tag}:latest" in tags)
@@ -167,10 +189,14 @@ def rate(count: int, seconds: float) -> float:
     return plausible(count / seconds, count) if seconds > 0 else 0.0
 
 
-def run_ollama(tag: str, prompt: str, max_tokens: int = OLLAMA_NUM_PREDICT) -> Generation:
+def run_ollama(
+    tag: str, prompt: str, max_tokens: int = OLLAMA_NUM_PREDICT, num_ctx: int | None = None
+) -> Generation:
+    """One request. Pass the same ``num_ctx`` for every request to a model:
+    Ollama reloads the model whenever the window changes."""
     import httpx
 
-    num_ctx = ollama_num_ctx(prompt)
+    num_ctx = num_ctx or ollama_num_ctx(prompt)
     r = httpx.post(
         f"{OLLAMA_URL}/api/generate",
         json={
@@ -226,6 +252,19 @@ def mlx_downloaded(repo: str) -> bool:
 
 
 _mlx_loaded: dict[str, tuple[object, object, float]] = {}
+
+
+def unload_mlx() -> None:
+    """Drop the loaded MLX model and Metal's buffer cache, so the memory is free
+    for whatever is measured next (on a Mac, Ollama shares the same RAM)."""
+    _mlx_loaded.clear()
+    gc.collect()
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception:
+        pass
 
 
 def run_mlx(repo: str, prompt: str, max_tokens: int = MLX_MAX_TOKENS) -> Generation:

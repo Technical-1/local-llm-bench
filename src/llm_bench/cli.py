@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, estimate, hwprobe, runners, schema
-from .bench import ResultStore, run_models
+from .bench import BENCH_CTX, ResultStore, run_models
 from .registry import BY_NAME, DEFAULT_CTX, MODELS, Model
 from .report import render
 
@@ -159,8 +159,9 @@ def _select(spec: str, include_slow: bool, hw: dict) -> list[Model]:
         return list(MODELS)
     if spec == "fit":
         ok = {"fast", "slow"} if include_slow else {"fast"}
+        # graded at the window the run itself uses, not check's default
         rt = estimate_runtime(hw)
-        return [m for m in MODELS if hwprobe.fit(m.need_gb(DEFAULT_CTX, rt), hw) in ok]
+        return [m for m in MODELS if hwprobe.fit(m.need_gb(BENCH_CTX, rt), hw) in ok]
     names = [n.strip() for n in spec.split(",") if n.strip()]
     unknown = [n for n in names if n not in BY_NAME]
     if unknown:
@@ -187,6 +188,8 @@ def cmd_run(args, hw: dict, ollama_ok: bool, tags: set[str]) -> int:
     runtime = _resolve_runtime(args.runtime, hw, ollama_ok)
     models = _select(args.models, args.include_slow, hw)
     print(f"Runtime: {runtime} | models: {', '.join(m.name for m in models) or 'none'}")
+    if args.models == "fit":
+        print(f"(fit = fits at the {BENCH_CTX:,}-token window the long-context task needs)")
     store = ResultStore(args.out / "results.json")
     ran = run_models(models, runtime, store, tags, hw)
     print(

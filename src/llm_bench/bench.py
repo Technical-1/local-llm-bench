@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import statistics
 from pathlib import Path
@@ -26,6 +27,12 @@ SPEED_PROMPT = (
 SPEED_RUNS = 3
 SPEED_TOKENS = 256
 
+# Ollama allocates the KV cache for its whole window up front and reloads the
+# model whenever the window changes, so every request to a model uses one
+# window: the one the longest task needs. Speed, memory and GPU share then all
+# describe the same configuration, and fit selection grades at it too.
+BENCH_CTX = runners.ollama_num_ctx(max((t["prompt"] for t in TASKS), key=len))
+
 
 def speed_pass(run, target: str, log=print) -> dict:
     """Load time, then median/min/max generation speed and warm time to first token."""
@@ -35,12 +42,14 @@ def speed_pass(run, target: str, log=print) -> dict:
         for i in range(SPEED_RUNS)
     ]
     tps = [g.gen_tps for g in gens if g.gen_tps]
+    if not tps:
+        raise RuntimeError("no timed run produced a usable rate")
     perf = {
         "load_s": round(warm.load_s, 1),
         "ttft_s": round(statistics.median(g.ttft_s for g in gens), 2),
-        "gen_tps": round(statistics.median(tps), 1) if tps else 0.0,
-        "gen_tps_min": round(min(tps), 1) if tps else 0.0,
-        "gen_tps_max": round(max(tps), 1) if tps else 0.0,
+        "gen_tps": round(statistics.median(tps), 1),
+        "gen_tps_min": round(min(tps), 1),
+        "gen_tps_max": round(max(tps), 1),
         "speed_runs": len(tps),
     }
     log(
@@ -52,7 +61,10 @@ def speed_pass(run, target: str, log=print) -> dict:
 
 def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
     """Run every task once on one model x runtime; return a result row."""
-    run = runners.run_mlx if runtime == "mlx" else runners.run_ollama
+    if runtime == "mlx":
+        run = runners.run_mlx
+    else:
+        run = functools.partial(runners.run_ollama, num_ctx=min(BENCH_CTX, model.max_ctx))
     try:
         speed = speed_pass(run, target, log)
     except Exception as e:  # fall back to timings from the quality tasks
@@ -145,7 +157,15 @@ class ResultStore:
 def run_models(
     models: list[Model], runtime: str, store: ResultStore, tags: set[str], hw: dict, log=print
 ) -> int:
-    """Benchmark each model on the chosen runtime(s); skip what isn't downloaded."""
+    """Benchmark each model on the chosen runtime(s); skip what isn't downloaded.
+
+    Each model is unloaded after its run, and anything Ollama already held is
+    unloaded first, so no model is measured while another occupies memory.
+    """
+    if runtime in ("ollama", "both"):
+        for tag in runners.ollama_resident():
+            log(f"--- unloading {tag} from Ollama so it does not skew the measurements")
+            runners.unload_ollama(tag)
     ran = 0
     for m in models:
         if runtime in ("mlx", "both"):
@@ -153,6 +173,7 @@ def run_models(
             if repo:
                 log(f"\n=== {m.name} [mlx: {repo}] ===")
                 store.put(schema.stamp(bench_one(m, "mlx", repo, log), hw))
+                runners.unload_mlx()
                 ran += 1
             else:
                 log(f"--- skip {m.name} [mlx]: not downloaded (huggingface-cli download {m.mlx})")
@@ -160,6 +181,7 @@ def run_models(
             if runners.ollama_has(tags, m.ollama):
                 log(f"\n=== {m.name} [ollama: {m.ollama}] ===")
                 store.put(schema.stamp(bench_one(m, "ollama", m.ollama, log), hw))
+                runners.unload_ollama(m.ollama)
                 ran += 1
             else:
                 log(f"--- skip {m.name} [ollama]: not pulled (ollama pull {m.ollama})")

@@ -32,14 +32,45 @@ def _load_rows(out: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
-def _measured(rows: list[dict], name: str, runtime: str) -> str:
-    """'5.3 GB, 61 tok/s' from an earlier run on this machine, or '-'."""
+def _measured(rows, name: str, runtime: str) -> dict | None:
+    """An earlier run of this model on this machine, preferring the same runtime."""
     mine = [r for r in rows if r["model"] == name]
     row = next((r for r in mine if r["runtime"] == runtime), mine[0] if mine else None)
     if not row:
-        return "-"
+        return None
     p = row["perf"]
-    return f"{p['peak_gb']:.1f} GB, {p['gen_tps']:.0f} tok/s ({row['runtime']})"
+    return {"runtime": row["runtime"], "peak_gb": p["peak_gb"], "gen_tps": p["gen_tps"]}
+
+
+def check_models(hw: dict, tags: set[str], ctx: int, rows=()) -> list[dict]:
+    """One row per registry model: estimates, verdict, and any earlier measurement."""
+    rt = estimate_runtime(hw)
+    free_now = hwprobe.free_budget(hw)
+    out = []
+    for m in sorted(MODELS, key=lambda m: m.need_gb(ctx, rt)):
+        need = m.need_gb(ctx, rt)
+        verdict = hwprobe.fit(need, hw)
+        out.append(
+            {
+                "model": m.name,
+                "ollama": m.ollama,
+                "mlx": m.mlx,
+                "need_gb": need,
+                "est_tps": estimate.tokens_per_sec(m, hw, rt, ctx=ctx),
+                "verdict": verdict,
+                "short_of_free_memory": verdict == "fast"
+                and free_now is not None
+                and need > free_now,
+                "max_ctx_fast": m.max_ctx_within(hw["fast_gb"], rt) if hw["fast_gb"] > 0 else 0,
+                "pulled": runners.ollama_has(tags, m.ollama),
+                "measured": _measured(rows, m.name, rt),
+            }
+        )
+    return out
+
+
+def _ctx_label(n: int) -> str:
+    return "-" if n <= 0 else f"{n // 1024}k"
 
 
 def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX, rows=()) -> int:
@@ -72,36 +103,37 @@ def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX,
         print(f"  note: {note}")
 
     rt = estimate_runtime(hw)
+    models = check_models(hw, tags, ctx, rows)
     print(f"\n== Models (estimates at {ctx:,} tokens of context, {rt} weights) ==")
     print(
-        f"  {'model':<20} {'needs':>7} {'est tok/s':>9}  {'verdict':<27} {'pulled':<7} "
-        f"{'measured here':<32} next step"
+        f"  {'model':<20} {'needs':>7} {'est tok/s':>9} {'max ctx':>7}  {'verdict':<27} "
+        f"{'pulled':<7} {'measured here':<26} next step"
     )
-    busy = False
-    for m in sorted(MODELS, key=lambda m: m.need_gb(ctx, rt)):
-        need = m.need_gb(ctx, rt)
-        verdict = hwprobe.fit(need, hw)
-        label = VERDICT[verdict]
-        if verdict == "fast" and free_now is not None and need > free_now:
-            label += " *"
-            busy = True
-        tps = estimate.tokens_per_sec(m, hw, rt, ctx=ctx)
-        speed = f"~{tps:.0f}" if tps else "?"
-        pulled = runners.ollama_has(tags, m.ollama)
-        step = f"ollama pull {m.ollama}" if verdict != "no" and not pulled else ""
-        print(
-            f"  {m.name:<20} {need:>5.1f}GB {speed:>9}  {label:<27} "
-            f"{'yes' if pulled else '-':<7} {_measured(rows, m.name, rt):<32} {step}"
+    for r in models:
+        label = VERDICT[r["verdict"]] + (" *" if r["short_of_free_memory"] else "")
+        speed = f"~{r['est_tps']:.0f}" if r["est_tps"] else "?"
+        meas = r["measured"]
+        meas_txt = (
+            f"{meas['peak_gb']:.1f} GB, {meas['gen_tps']:.0f} tok/s ({meas['runtime']})"
+            if meas
+            else "-"
         )
-    if busy:
+        step = f"ollama pull {r['ollama']}" if r["verdict"] != "no" and not r["pulled"] else ""
+        print(
+            f"  {r['model']:<20} {r['need_gb']:>5.1f}GB {speed:>9} "
+            f"{_ctx_label(r['max_ctx_fast']):>7}  {label:<27} "
+            f"{'yes' if r['pulled'] else '-':<7} {meas_txt:<26} {step}"
+        )
+    if any(r["short_of_free_memory"] for r in models):
         print(
             f"\n  * fits this machine, but not in the {free_now:.1f} GB free right now. "
             "Close other apps first, or it will be slow."
         )
     print(
-        "\n  needs and est tok/s are estimates from the model's size and this machine's "
-        "memory bandwidth;\n  ? means no basis for one (unknown or laptop GPU, or CPU "
-        "offload). 'measured here' is from llm-bench run."
+        "\n  needs, est tok/s and max ctx are estimates from the model's architecture and this "
+        "machine's\n  memory and bandwidth. max ctx is the longest context that still fits "
+        "fast. ? means no basis\n  for an estimate (unknown or laptop GPU, or CPU offload). "
+        "'measured here' is from llm-bench run."
     )
     print("\nNext: pull one or more models marked 'fits', then  llm-bench run")
     return 0
@@ -176,7 +208,27 @@ def main(argv: list[str] | None = None) -> int:
         "(default: ./llm-bench-results)",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("check", help="show this machine's budget and which models fit; runs nothing")
+    check = sub.add_parser(
+        "check", help="show this machine's budget and which models fit; runs nothing"
+    )
+    check.add_argument(
+        "--ctx",
+        type=int,
+        default=DEFAULT_CTX,
+        help=f"grade at this many tokens of context (default {DEFAULT_CTX})",
+    )
+    check.add_argument(
+        "--vram",
+        type=float,
+        metavar="GB",
+        help="grade a graphics card with this much VRAM instead of the detected one",
+    )
+    check.add_argument(
+        "--ram",
+        type=float,
+        metavar="GB",
+        help="grade this much system RAM (unified memory on a Mac) instead of the detected amount",
+    )
     run = sub.add_parser("run", help="benchmark models, then write the scorecard")
     run.add_argument(
         "--models",
@@ -204,7 +256,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_report(args, hw)
     ollama_ok, tags = runners.ollama_status()
     if args.cmd == "check":
-        return cmd_check(hw, ollama_ok, tags, rows=_load_rows(args.out))
+        if args.ctx <= 0:
+            raise SystemExit("--ctx must be a positive number of tokens.")
+        graded = hwprobe.override(hw, vram=args.vram, ram=args.ram)
+        return cmd_check(graded, ollama_ok, tags, args.ctx, rows=_load_rows(args.out))
     return cmd_run(args, hw, ollama_ok, tags)
 
 

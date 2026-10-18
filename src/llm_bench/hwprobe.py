@@ -350,6 +350,44 @@ def probe():
     return info
 
 
+def override(hw, vram=None, ram=None):
+    """A copy of ``hw`` graded for memory the user names instead of what was detected.
+
+    For a machine about to be bought, or one where detection failed. Free
+    memory is unknown for imagined hardware, so it is dropped.
+    """
+    if vram is None and ram is None:
+        return hw
+    hw = {**hw, "notes": list(hw["notes"]), "ram_free_gb": None}
+    unified = hw["accelerator"] == "apple-unified"
+    if vram is not None and unified:
+        raise SystemExit("Apple Silicon has no separate VRAM; use --ram for unified memory.")
+    if ram is not None:
+        hw["ram_gb"] = float(ram)
+    if unified:
+        limit = apple_gpu_share(hw["ram_gb"])
+        hw["gpu"] = {**hw["gpu"], "vram_gb": round(limit, 1)}
+        hw["gpu_limit_source"] = "estimate"
+        hw["fast_gb"] = hw["spill_gb"] = round(limit - 2.0, 1)
+    else:
+        if vram is not None:
+            old = hw.get("gpu") or {}
+            hw["gpu"] = dict(
+                name=old.get("name", "GPU given with --vram"),
+                vram_gb=float(vram),
+                free_gb=None,
+                kind=old.get("kind", "other"),
+            )
+            hw["accelerator"] = hw["gpu"]["kind"]
+            hw["fast_gb"] = round(vram - 0.5, 1)
+        elif hw.get("gpu"):
+            hw["gpu"] = {**hw["gpu"], "free_gb": None}
+        hw["spill_gb"] = round(hw["fast_gb"] + hw["ram_gb"] * 0.6, 1)
+    given = ", ".join(f"--{k} {v:g} GB" for k, v in (("vram", vram), ("ram", ram)) if v)
+    hw["notes"].append(f"Graded for {given}, not the memory detected on this machine.")
+    return hw
+
+
 def free_budget(hw):
     """What the accelerator could take right now, after other apps; None if unknown.
 

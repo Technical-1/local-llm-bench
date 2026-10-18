@@ -207,3 +207,33 @@ def test_apple_limit_reads_metal_when_the_default_applies(monkeypatch):
 def test_apple_limit_falls_back_to_the_rule(monkeypatch):
     _fake_apple(monkeypatch)
     assert hwprobe.apple_gpu_limit(16.0) == (pytest.approx(16 * 0.66), "estimate")
+
+
+def test_override_grades_a_bigger_graphics_card(nvidia_hw):
+    hw = hwprobe.override(nvidia_hw, vram=24)
+    assert hw["gpu"]["vram_gb"] == 24.0 and hw["fast_gb"] == 23.5
+    assert hw["gpu"]["name"] == "NVIDIA GeForce RTX 4070"  # kept, so bandwidth still resolves
+    assert hw["spill_gb"] == round(23.5 + 32 * 0.6, 1)
+    assert any("--vram 24 GB" in n for n in hw["notes"])
+    assert nvidia_hw["fast_gb"] == 11.5, "the detected hardware is not modified"
+
+
+def test_override_ram_on_a_mac_regrades_unified_memory():
+    mac = {
+        "accelerator": "apple-unified",
+        "gpu": {"name": "Apple M4 Pro", "vram_gb": 17.8, "kind": "apple"},
+        "ram_gb": 24.0,
+        "ram_free_gb": 8.0,
+        "fast_gb": 15.8,
+        "spill_gb": 15.8,
+        "notes": [],
+    }
+    hw = hwprobe.override(mac, ram=48)
+    assert hw["fast_gb"] == hw["spill_gb"] == round(48 * 0.75 - 2.0, 1)
+    assert hw["ram_free_gb"] is None and hw["gpu_limit_source"] == "estimate"
+    with pytest.raises(SystemExit):
+        hwprobe.override(mac, vram=24)
+
+
+def test_no_override_returns_the_detected_hardware(nvidia_hw):
+    assert hwprobe.override(nvidia_hw) is nvidia_hw

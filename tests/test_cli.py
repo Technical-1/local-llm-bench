@@ -120,3 +120,28 @@ def test_scorecard_puts_estimates_next_to_measurements(fake_machine, tmp_path):
     card = (tmp_path / "scorecard.md").read_text(encoding="utf-8")
     assert "| Est tok/s |" in card and "| Est GB |" in card
     assert "x the estimate" in card
+
+
+def test_check_at_a_longer_context_needs_more_memory(fake_machine, tmp_path, capsys):
+    def need(ctx):
+        cli.main(["--out", str(tmp_path), "check", "--ctx", str(ctx)])
+        line = next(ln for ln in capsys.readouterr().out.splitlines() if "llama3.2-3b " in ln)
+        return float(line.split()[1].removesuffix("GB"))
+
+    assert need(32_768) > need(4096)
+
+
+def test_check_reports_the_longest_context_that_fits(fake_machine):
+    rows = cli.check_models(fake_machine, set(), 8192)
+    by = {r["model"]: r for r in rows}
+    assert by["qwen2.5-7b"]["max_ctx_fast"] == 32_768  # its own limit fits in 11.5 GB
+    assert 0 < by["llama3.2-3b"]["max_ctx_fast"] < 131_072  # KV-heavy: runs out first
+    assert by["llama3.3-70b"]["max_ctx_fast"] == 0
+
+
+def test_check_with_a_vram_override(fake_machine, tmp_path, capsys):
+    cli.main(["--out", str(tmp_path), "check", "--vram", "24"])
+    out = capsys.readouterr().out
+    assert "Graded for --vram 24 GB" in out
+    line = next(ln for ln in out.splitlines() if "qwen2.5-32b " in ln)
+    assert "fits - fast" in line

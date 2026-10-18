@@ -84,6 +84,16 @@ def render(rows: list[dict], hw: dict) -> str:
             f"{p['prompt_tps']:.0f} | {p['gen_tps']:.0f} | {p['peak_gb']:.1f} |"
         )
 
+    cut = [r for r in rows if r.get("truncated_tasks")]
+    if cut:
+        out += [
+            "",
+            "**Warning:** the runtime dropped part of the prompt, so these scores "
+            "understate the model:",
+            "",
+        ]
+        out += [f"- {r['model']} ({r['runtime']}): {', '.join(r['truncated_tasks'])}" for r in cut]
+
     out += ["", "## Per-axis winners", ""]
     out.append(f"- **Best overall:** {ranked[0]['model']} ({ranked[0]['runtime']})")
     for c in CATEGORIES:

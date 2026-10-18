@@ -114,3 +114,40 @@ def test_mlx_downloaded_ignores_partial_blobs(monkeypatch, tmp_path):
     assert not runners.mlx_downloaded("org/model")
     (blobs / "abc").write_text("")
     assert runners.mlx_downloaded("org/model")
+
+
+def test_num_ctx_holds_the_long_context_task():
+    from llm_bench.tasks import TASKS
+
+    longest = max((t["prompt"] for t in TASKS), key=len)
+    ctx = runners.ollama_num_ctx(longest)
+    assert ctx % 4096 == 0
+    # the whole prompt at a pessimistic 3.5 chars per token, plus the answer budget
+    assert ctx >= len(longest) / 3.5 + runners.OLLAMA_NUM_PREDICT
+    assert runners.ollama_num_ctx("2+2?") == runners.OLLAMA_MIN_CTX
+
+
+def test_run_ollama_sends_num_ctx_and_flags_truncation(monkeypatch):
+    import httpx
+
+    sent = {}
+    long_prompt = "word " * 12000  # 60,000 characters, about 12,000 tokens
+
+    def post(url, json, **k):
+        sent.update(json["options"])
+        # Ollama kept only its 4096-token default window
+        return _Resp({"response": "x", "prompt_eval_count": 4096, "eval_count": 1})
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp({"models": []}))
+    g = runners.run_ollama("m", long_prompt)
+    assert sent["num_ctx"] == runners.ollama_num_ctx(long_prompt) == g.num_ctx
+    assert g.prompt_tokens == 4096 and g.truncated
+
+
+@pytest.mark.parametrize(
+    "chars,tokens,cut",
+    [(20_000, 5_000, False), (20_000, 3_000, True), (1_000, 10, False)],
+)
+def test_looks_truncated(chars, tokens, cut):
+    assert runners.looks_truncated("a" * chars, tokens) is cut

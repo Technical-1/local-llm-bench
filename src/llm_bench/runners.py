@@ -32,6 +32,11 @@ MLX_MAX_TOKENS = 2048  # generous, so reasoning models can finish thinking AND a
 # Ollama counts reasoning against num_predict; a thinking model can exhaust a
 # small budget before it emits the final answer, so give it more room.
 OLLAMA_NUM_PREDICT = 6144
+# Ollama's default context is small (2k to 4k tokens, depending on version and
+# VRAM) and it silently drops the start of a longer prompt. Every request asks
+# for a window that holds its prompt plus the answer budget.
+OLLAMA_MIN_CTX = 8192
+CHARS_PER_TOKEN_LOW = 3.5  # deliberately low for English, so the window is never short
 
 # Same resolution order as huggingface_hub: HF_HUB_CACHE, then HF_HOME/hub.
 HF_CACHE = Path(
@@ -50,6 +55,9 @@ class Generation:
     prompt_tps: float = 0.0
     gen_tps: float = 0.0
     peak_gb: float = 0.0
+    prompt_tokens: int = 0
+    num_ctx: int = 0  # context window requested (Ollama only)
+    truncated: bool = False  # the runtime saw much less of the prompt than was sent
 
 
 def strip_thinking(text: str) -> str:
@@ -110,16 +118,37 @@ def _ollama_resident_gb(tag: str) -> float:
     return 0.0
 
 
+def ollama_num_ctx(prompt: str) -> int:
+    """A context window that fits this prompt and the answer, in steps of 4096."""
+    need = int(len(prompt) / CHARS_PER_TOKEN_LOW) + OLLAMA_NUM_PREDICT
+    return max(OLLAMA_MIN_CTX, -(-need // 4096) * 4096)
+
+
+def looks_truncated(prompt: str, prompt_tokens: int) -> bool:
+    """True when the runtime evaluated far fewer tokens than the prompt holds.
+
+    No tokenizer averages more than about 6 characters per token on English,
+    so fewer tokens than that means part of the prompt was dropped. Only long
+    prompts are checked: a short one can be mostly served from Ollama's cache.
+    """
+    return len(prompt) > 4000 and prompt_tokens < len(prompt) / 6
+
+
 def run_ollama(tag: str, prompt: str) -> Generation:
     import httpx
 
+    num_ctx = ollama_num_ctx(prompt)
     r = httpx.post(
         f"{OLLAMA_URL}/api/generate",
         json={
             "model": tag,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0, "num_predict": OLLAMA_NUM_PREDICT},
+            "options": {
+                "temperature": 0,
+                "num_predict": OLLAMA_NUM_PREDICT,
+                "num_ctx": num_ctx,
+            },
         },
         timeout=900,
     )
@@ -140,6 +169,9 @@ def run_ollama(tag: str, prompt: str) -> Generation:
         prompt_tps=p_cnt / (p_dur / ns),
         gen_tps=e_cnt / (e_dur / ns),
         peak_gb=_ollama_resident_gb(tag),
+        prompt_tokens=p_cnt,
+        num_ctx=num_ctx,
+        truncated=looks_truncated(prompt, p_cnt),
     )
 
 
@@ -180,12 +212,14 @@ def run_mlx(repo: str, prompt: str) -> Generation:
     ttft = None
     out: list[str] = []
     prompt_tps = gen_tps = 0.0
+    prompt_tokens = 0
     for resp in stream_generate(model, tok, chat, max_tokens=MLX_MAX_TOKENS):
         if ttft is None:
             ttft = time.time() - t0
         out.append(resp.text)
         prompt_tps = getattr(resp, "prompt_tps", prompt_tps)
         gen_tps = getattr(resp, "generation_tps", gen_tps)
+        prompt_tokens = getattr(resp, "prompt_tokens", prompt_tokens)
     return Generation(
         text="".join(out),
         load_s=load_s,
@@ -193,4 +227,5 @@ def run_mlx(repo: str, prompt: str) -> Generation:
         prompt_tps=prompt_tps,
         gen_tps=gen_tps,
         peak_gb=mx.get_peak_memory() / 1e9,
+        prompt_tokens=prompt_tokens,
     )

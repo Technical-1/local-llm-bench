@@ -22,6 +22,8 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
     prompt_tps: list[float] = []
     gen_tps: list[float] = []
     details = []
+    num_ctx = 0
+    truncated: list[str] = []
     for task in TASKS:
         try:
             g = run(target, task["prompt"])
@@ -32,6 +34,9 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
         scores[task["category"]].append(score)
         load_s, ttft_s = max(load_s, g.load_s), max(ttft_s, g.ttft_s)
         peak_gb = max(peak_gb, g.peak_gb)
+        num_ctx = max(num_ctx, g.num_ctx)
+        if g.truncated:
+            truncated.append(task["id"])
         if g.prompt_tps:
             prompt_tps.append(g.prompt_tps)
         if g.gen_tps:
@@ -42,9 +47,12 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
                 "cat": task["category"],
                 "score": score,
                 "gen_tps": round(g.gen_tps, 1),
+                "prompt_tokens": g.prompt_tokens,
+                "truncated": g.truncated,
             }
         )
-        log(f"    {task['id']:<22} score={score:.2f}  {g.gen_tps:6.1f} tok/s")
+        flag = "  PROMPT TRUNCATED" if g.truncated else ""
+        log(f"    {task['id']:<22} score={score:.2f}  {g.gen_tps:6.1f} tok/s{flag}")
     return {
         "model": model.name,
         "runtime": runtime,
@@ -59,7 +67,9 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
             "prompt_tps": _avg(prompt_tps),
             "gen_tps": _avg(gen_tps),
             "peak_gb": round(peak_gb, 1),
+            "num_ctx": num_ctx,
         },
+        "truncated_tasks": truncated,
         "details": details,
     }
 

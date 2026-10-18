@@ -81,3 +81,18 @@ def test_missing_ollama_is_explained(fake_machine, tmp_path, monkeypatch):
 def test_report_without_results_says_so(fake_machine, tmp_path, capsys):
     assert cli.main(["--out", str(tmp_path), "report"]) == 0
     assert "No results yet" in capsys.readouterr().out
+
+
+def test_truncated_prompt_is_flagged_in_the_scorecard(fake_machine, tmp_path, monkeypatch):
+    def short_window(tag, prompt):
+        tid = PROMPT_TO_ID[prompt]
+        return runners.Generation(
+            text=REFERENCE_ANSWERS[tid], gen_tps=40.0, truncated=tid == "longctx_needle"
+        )
+
+    monkeypatch.setattr(runners, "run_ollama", short_window)
+    cli.main(["--out", str(tmp_path), "run", "--models", "qwen2.5-7b"])
+    row = json.loads((tmp_path / "results.json").read_text())[0]
+    assert row["truncated_tasks"] == ["longctx_needle"]
+    card = (tmp_path / "scorecard.md").read_text(encoding="utf-8")
+    assert "dropped part of the prompt" in card and "longctx_needle" in card

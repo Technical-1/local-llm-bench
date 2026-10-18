@@ -104,3 +104,19 @@ def test_check_marks_models_that_need_more_than_is_free(fake_machine, tmp_path, 
     out = capsys.readouterr().out
     assert "Free now  3.5 GB" in out
     assert "fits - fast *" in out and "not in the 3.5 GB free right now" in out
+
+
+def test_check_shows_estimates_and_earlier_measurements(fake_machine, tmp_path, capsys):
+    cli.main(["--out", str(tmp_path), "run", "--models", "qwen2.5-7b"])
+    capsys.readouterr()
+    cli.main(["--out", str(tmp_path), "check"])
+    out = capsys.readouterr().out
+    assert "est tok/s" in out and "~" in out  # an RTX 4070 has a known bandwidth
+    assert "5.2 GB, 40 tok/s (ollama)" in out  # measured by the run above
+
+
+def test_scorecard_puts_estimates_next_to_measurements(fake_machine, tmp_path):
+    cli.main(["--out", str(tmp_path), "run", "--models", "qwen2.5-7b"])
+    card = (tmp_path / "scorecard.md").read_text(encoding="utf-8")
+    assert "| Est tok/s |" in card and "| Est GB |" in card
+    assert "x the estimate" in card

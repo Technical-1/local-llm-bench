@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, hwprobe, runners
+from . import __version__, estimate, hwprobe, runners
 from .bench import ResultStore, run_models
 from .registry import BY_NAME, DEFAULT_CTX, MODELS, Model
 from .report import render
@@ -27,7 +27,22 @@ def estimate_runtime(hw: dict) -> str:
     return "mlx" if hw["mlx_ok"] else "ollama"
 
 
-def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX) -> int:
+def _load_rows(out: Path) -> list[dict]:
+    path = out / "results.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
+def _measured(rows: list[dict], name: str, runtime: str) -> str:
+    """'5.3 GB, 61 tok/s' from an earlier run on this machine, or '-'."""
+    mine = [r for r in rows if r["model"] == name]
+    row = next((r for r in mine if r["runtime"] == runtime), mine[0] if mine else None)
+    if not row:
+        return "-"
+    p = row["perf"]
+    return f"{p['peak_gb']:.1f} GB, {p['gen_tps']:.0f} tok/s ({row['runtime']})"
+
+
+def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX, rows=()) -> int:
     gpu = hw["gpu"]
     source = f", limit from {hw['gpu_limit_source']}" if hw.get("gpu_limit_source") else ""
     gpu_line = (
@@ -57,8 +72,11 @@ def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX)
         print(f"  note: {note}")
 
     rt = estimate_runtime(hw)
-    print(f"\n== Models (estimated at {ctx:,} tokens of context, {rt} weights) ==")
-    print(f"  {'model':<20} {'needs':>7}  {'verdict':<27} {'pulled':<7} next step")
+    print(f"\n== Models (estimates at {ctx:,} tokens of context, {rt} weights) ==")
+    print(
+        f"  {'model':<20} {'needs':>7} {'est tok/s':>9}  {'verdict':<27} {'pulled':<7} "
+        f"{'measured here':<32} next step"
+    )
     busy = False
     for m in sorted(MODELS, key=lambda m: m.need_gb(ctx, rt)):
         need = m.need_gb(ctx, rt)
@@ -67,14 +85,24 @@ def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX)
         if verdict == "fast" and free_now is not None and need > free_now:
             label += " *"
             busy = True
+        tps = estimate.tokens_per_sec(m, hw, rt, ctx=ctx)
+        speed = f"~{tps:.0f}" if tps else "?"
         pulled = runners.ollama_has(tags, m.ollama)
         step = f"ollama pull {m.ollama}" if verdict != "no" and not pulled else ""
-        print(f"  {m.name:<20} {need:>5.1f}GB  {label:<27} {'yes' if pulled else '-':<7} {step}")
+        print(
+            f"  {m.name:<20} {need:>5.1f}GB {speed:>9}  {label:<27} "
+            f"{'yes' if pulled else '-':<7} {_measured(rows, m.name, rt):<32} {step}"
+        )
     if busy:
         print(
             f"\n  * fits this machine, but not in the {free_now:.1f} GB free right now. "
             "Close other apps first, or it will be slow."
         )
+    print(
+        "\n  needs and est tok/s are estimates from the model's size and this machine's "
+        "memory bandwidth;\n  ? means no basis for one (unknown or laptop GPU, or CPU "
+        "offload). 'measured here' is from llm-bench run."
+    )
     print("\nNext: pull one or more models marked 'fits', then  llm-bench run")
     return 0
 
@@ -176,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_report(args, hw)
     ollama_ok, tags = runners.ollama_status()
     if args.cmd == "check":
-        return cmd_check(hw, ollama_ok, tags)
+        return cmd_check(hw, ollama_ok, tags, rows=_load_rows(args.out))
     return cmd_run(args, hw, ollama_ok, tags)
 
 

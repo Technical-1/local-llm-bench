@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import statistics
+
+from . import estimate
+from .registry import BY_NAME, DEFAULT_CTX
 from .tasks import CATEGORIES
 
 QUALITY_WEIGHT = 0.70
@@ -18,6 +22,28 @@ def composite(row: dict) -> float:
 
 def _pct(x: float) -> str:
     return f"{round(x * 100)}%"
+
+
+def bench_ctx(row: dict) -> int:
+    """The largest context the run used: Ollama's window, or MLX's longest prompt."""
+    if row["perf"].get("num_ctx"):
+        return row["perf"]["num_ctx"]
+    prompts = [d.get("prompt_tokens", 0) for d in row.get("details", [])]
+    return max(prompts, default=0) or DEFAULT_CTX
+
+
+def estimates(row: dict, hw: dict) -> tuple[float | None, float | None]:
+    """(estimated GB at the run's context, estimated tok/s) for a result row."""
+    m = BY_NAME.get(row["model"])
+    if not m:
+        return None, None
+    repo = row.get("target") if row["runtime"] == "mlx" else None
+    gb = m.need_gb(bench_ctx(row), row["runtime"], repo)
+    return gb, estimate.tokens_per_sec(m, hw, row["runtime"], repo)
+
+
+def _num(x: float | None, fmt: str) -> str:
+    return "?" if x is None else format(x, fmt)
 
 
 def _spread(perf: dict) -> str:
@@ -88,17 +114,30 @@ def render(rows: list[dict], hw: dict) -> str:
         "",
         "## Performance",
         "",
-        "| Model | Runtime | Load s | TTFT s | Prompt tok/s | Gen tok/s | Gen range "
-        "| Peak GB | On GPU |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "Est columns are the formula's prediction for this machine (? = no basis); "
+        "every other column is measured.",
+        "",
+        "| Model | Runtime | Load s | TTFT s | Prompt tok/s | Est tok/s | Gen tok/s "
+        "| Gen range | Est GB | Peak GB | On GPU |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
+    ratios = []
     for r in sorted(rows, key=lambda r: r["perf"]["gen_tps"], reverse=True):
         p = r["perf"]
+        est_gb, est_tps = estimates(r, hw)
+        if est_tps and p["gen_tps"]:
+            ratios.append(p["gen_tps"] / est_tps)
         out.append(
             f"| {r['model']} | {r['runtime']} | {p['load_s']:.1f} | {p['ttft_s']:.2f} | "
-            f"{p['prompt_tps']:.0f} | {p['gen_tps']:.0f} | {_spread(p)} | "
-            f"{p['peak_gb']:.1f} | {_gpu_share(p)} |"
+            f"{p['prompt_tps']:.0f} | {_num(est_tps, '.0f')} | {p['gen_tps']:.0f} | "
+            f"{_spread(p)} | {_num(est_gb, '.1f')} | {p['peak_gb']:.1f} | {_gpu_share(p)} |"
         )
+    if ratios:
+        out += [
+            "",
+            f"Measured speed was {statistics.median(ratios):.2f}x the estimate "
+            f"(median of {len(ratios)}).",
+        ]
 
     cut = [r for r in rows if r.get("truncated_tasks")]
     if cut:

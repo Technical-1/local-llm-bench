@@ -255,3 +255,49 @@ def test_raw_sources_on_linux_include_sysfs(monkeypatch, tmp_path):
 def test_raw_sources_never_include_the_hostname():
     text = "\n".join(t for _, t in hwprobe.raw_sources())
     assert hwprobe.platform.node() not in text
+
+
+def test_identical_cards_pool_their_memory(monkeypatch):
+    card = {"name": "NVIDIA GeForce RTX 3090", "vram_gb": 24.0, "free_gb": 23.0, "kind": "nvidia"}
+    _fake_windows(monkeypatch, [dict(card), dict(card)], ram=64.0)
+    hw = hwprobe.probe()
+    assert hw["gpu"]["name"] == "2x NVIDIA GeForce RTX 3090"
+    assert hw["gpu"]["vram_gb"] == 48.0 and hw["gpu"]["free_gb"] == 46.0
+    assert hw["gpu"]["count"] == 2 and hw["fast_gb"] == 47.0
+    assert any("one card's speed" in n for n in hw["notes"])
+
+
+def test_registry_duplicates_are_not_pooled():
+    # Windows keeps entries for removed adapters; two may be the same card
+    ghost = {
+        "name": "AMD Radeon RX 7800 XT",
+        "vram_gb": 16.0,
+        "kind": "amd",
+        "from_registry": True,
+    }
+    assert len(hwprobe.combine_identical([dict(ghost), dict(ghost)])) == 2
+
+
+@pytest.mark.parametrize(
+    "name,integrated",
+    [
+        ("Intel(R) UHD Graphics 770", True),
+        ("Intel(R) Iris(R) Xe Graphics", True),
+        ("Intel(R) Arc(TM) Graphics", True),  # Meteor Lake's built-in Arc
+        ("Intel(R) Arc(TM) A770 Graphics", False),
+        ("Intel(R) Arc(TM) B580 Graphics", False),
+        ("NVIDIA GeForce RTX 4070", False),
+    ],
+)
+def test_is_integrated_intel(name, integrated):
+    assert hwprobe.is_integrated_intel(name) is integrated
+
+
+def test_integrated_intel_reporting_shared_memory_is_not_an_accelerator(monkeypatch):
+    _fake_windows(
+        monkeypatch,
+        [{"name": "Intel(R) Iris(R) Xe Graphics", "vram_gb": 8.0, "kind": "intel"}],
+        ram=16.0,
+    )
+    hw = hwprobe.probe()
+    assert hw["gpu"] is None and hw["fast_gb"] == 0.0

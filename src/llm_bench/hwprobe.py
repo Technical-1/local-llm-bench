@@ -173,7 +173,9 @@ def _windows_registry_gpus():
                 except OSError:
                     raw = winreg.QueryValueEx(k, "HardwareInformation.MemorySize")[0]
                     vram = int.from_bytes(raw, "little") if isinstance(raw, bytes) else int(raw)
-                gpus.append(dict(name=name, vram_gb=vram / GB, kind=_kind(name)))
+                gpus.append(
+                    dict(name=name, vram_gb=vram / GB, kind=_kind(name), from_registry=True)
+                )
             except OSError:
                 continue
     except Exception:
@@ -233,6 +235,41 @@ def _linux_amd_gpus():
             gpu["free_gb"] = (total - used) / GB
         gpus.append(gpu)
     return gpus
+
+
+def is_integrated_intel(name):
+    """Intel graphics built into the CPU: UHD, HD, Iris, and Arc without a model
+    number (Meteor Lake and later). Discrete Arc cards are A- or B-series."""
+    n = name.lower()
+    return "intel" in n and not re.search(r"\barc\b.*\b[ab]\d{3}", n)
+
+
+def combine_identical(found):
+    """Count identical cards as one pool: Ollama splits a model's layers across them.
+
+    Only devices known to be present are combined. Windows' display-adapter
+    registry key can keep entries for removed cards, so two registry entries
+    with the same name may be one card.
+    """
+    groups = {}
+    for g in found:
+        groups.setdefault((g["name"], g["kind"]), []).append(g)
+    out = []
+    for (name, kind), same in groups.items():
+        if len(same) == 1 or any(g.get("from_registry") or g.get("vram_capped") for g in same):
+            out.extend(same)
+            continue
+        free = [g.get("free_gb") for g in same]
+        out.append(
+            dict(
+                name=f"{len(same)}x {name}",
+                kind=kind,
+                count=len(same),
+                vram_gb=sum(g["vram_gb"] for g in same),
+                free_gb=None if None in free else sum(free),
+            )
+        )
+    return out
 
 
 def gpus():
@@ -418,9 +455,14 @@ def probe():
         info["fast_gb"] = round(limit - 2.0, 1)  # leave room for macOS + apps
         info["spill_gb"] = info["fast_gb"]  # unified: there is no slower pool to spill to
     else:
+        # Under 2 GB is display-only; Intel's integrated graphics share system
+        # RAM and are not accelerated by stock Ollama, whatever size they report.
         cands = [
-            g for g in gpus() if g["vram_gb"] >= 2.0
-        ]  # under 2 GB is integrated / display-only
+            g
+            for g in combine_identical(gpus())
+            if g["vram_gb"] >= 2.0
+            and not (g["kind"] == "intel" and is_integrated_intel(g["name"]))
+        ]
         best = max(cands, key=lambda g: g["vram_gb"], default=None)
         if best:
             info["gpu"] = dict(
@@ -430,7 +472,14 @@ def probe():
                 kind=best["kind"],
             )
             info["accelerator"] = best["kind"]
-            info["fast_gb"] = round(best["vram_gb"] - 0.5, 1)
+            count = best.get("count", 1)
+            info["fast_gb"] = round(best["vram_gb"] - 0.5 * count, 1)
+            if count > 1:
+                info["gpu"]["count"] = count
+                info["notes"].append(
+                    f"{count} identical cards: Ollama splits a model across them, so their memory "
+                    "adds up, but generation runs at about one card's speed."
+                )
             if best.get("vram_capped"):
                 info["notes"].append(
                     "VRAM read from WMI, which caps at 4 GB; the real figure may be higher."

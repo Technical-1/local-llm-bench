@@ -44,6 +44,8 @@ HF_CACHE = Path(
     or Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface") / "hub"
 )
 
+MAX_PLAUSIBLE_TPS = 10_000  # faster than any local runtime; a higher rate is a timing glitch
+
 THINKING_MARKERS = ("</think>", "</thinking>", "<channel|>", "<|channel|>")
 
 
@@ -143,7 +145,18 @@ def looks_truncated(prompt: str, prompt_tokens: int) -> bool:
     return len(prompt) > 4000 and prompt_tokens < len(prompt) / 6
 
 
-def run_ollama(tag: str, prompt: str) -> Generation:
+def plausible(tps: float, count: int) -> float:
+    """The rate, or 0.0 (unknown) when it can't be trusted: under two tokens
+    gives no interval to time, and over 10,000 tok/s is a timing glitch."""
+    return tps if count >= 2 and 0 < tps <= MAX_PLAUSIBLE_TPS else 0.0
+
+
+def rate(count: int, seconds: float) -> float:
+    """Tokens per second from a count and a duration, guarded by plausible()."""
+    return plausible(count / seconds, count) if seconds > 0 else 0.0
+
+
+def run_ollama(tag: str, prompt: str, max_tokens: int = OLLAMA_NUM_PREDICT) -> Generation:
     import httpx
 
     num_ctx = ollama_num_ctx(prompt)
@@ -155,7 +168,7 @@ def run_ollama(tag: str, prompt: str) -> Generation:
             "stream": False,
             "options": {
                 "temperature": 0,
-                "num_predict": OLLAMA_NUM_PREDICT,
+                "num_predict": max_tokens,
                 "num_ctx": num_ctx,
             },
         },
@@ -164,8 +177,8 @@ def run_ollama(tag: str, prompt: str) -> Generation:
     r.raise_for_status()
     d = r.json()
     ns = 1e9
-    p_cnt, p_dur = d.get("prompt_eval_count", 0), d.get("prompt_eval_duration", 0) or 1
-    e_cnt, e_dur = d.get("eval_count", 0), d.get("eval_duration", 0) or 1
+    p_cnt, p_dur = d.get("prompt_eval_count", 0), d.get("prompt_eval_duration", 0)
+    e_cnt, e_dur = d.get("eval_count", 0), d.get("eval_duration", 0)
     # Ollama returns `thinking` separately from `response`. Some builds over-think
     # and never emit a final response (done_reason=length); fall back to the
     # thinking text so we score the model's answer, not the runtime's quirk.
@@ -176,8 +189,8 @@ def run_ollama(tag: str, prompt: str) -> Generation:
         text=text,
         load_s=load / ns,
         ttft_s=(load + d.get("prompt_eval_duration", 0)) / ns,
-        prompt_tps=p_cnt / (p_dur / ns),
-        gen_tps=e_cnt / (e_dur / ns),
+        prompt_tps=rate(p_cnt, p_dur / ns),
+        gen_tps=rate(e_cnt, e_dur / ns),
         peak_gb=resident_gb,
         gpu_share=gpu_share,
         prompt_tokens=p_cnt,
@@ -204,7 +217,7 @@ def mlx_downloaded(repo: str) -> bool:
 _mlx_loaded: dict[str, tuple[object, object, float]] = {}
 
 
-def run_mlx(repo: str, prompt: str) -> Generation:
+def run_mlx(repo: str, prompt: str, max_tokens: int = MLX_MAX_TOKENS) -> Generation:
     import mlx.core as mx
     from mlx_lm import load, stream_generate
 
@@ -223,20 +236,22 @@ def run_mlx(repo: str, prompt: str) -> Generation:
     ttft = None
     out: list[str] = []
     prompt_tps = gen_tps = 0.0
+    gen_tokens = 0
     prompt_tokens = 0
-    for resp in stream_generate(model, tok, chat, max_tokens=MLX_MAX_TOKENS):
+    for resp in stream_generate(model, tok, chat, max_tokens=max_tokens):
         if ttft is None:
             ttft = time.time() - t0
         out.append(resp.text)
         prompt_tps = getattr(resp, "prompt_tps", prompt_tps)
         gen_tps = getattr(resp, "generation_tps", gen_tps)
         prompt_tokens = getattr(resp, "prompt_tokens", prompt_tokens)
+        gen_tokens = getattr(resp, "generation_tokens", len(out))
     return Generation(
         text="".join(out),
         load_s=load_s,
         ttft_s=ttft or 0.0,
-        prompt_tps=prompt_tps,
-        gen_tps=gen_tps,
+        prompt_tps=plausible(prompt_tps, prompt_tokens),
+        gen_tps=plausible(gen_tps, gen_tokens),
         peak_gb=mx.get_peak_memory() / 1e9,
         prompt_tokens=prompt_tokens,
         gpu_share=1.0,  # MLX runs entirely on the Apple GPU

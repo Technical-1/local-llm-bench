@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from pathlib import Path
 
 from . import runners
@@ -14,9 +15,49 @@ def _avg(xs: list[float]) -> float:
     return round(sum(xs) / len(xs), 2) if xs else 0.0
 
 
+# The speed pass: one warmup (pays the model load), then the same short request
+# a few times with a fixed output budget, so tok/s is comparable across models
+# and is not skewed by how long each quality task's answer happens to be.
+WARMUP_PROMPT = "Reply with the single word: ready"
+SPEED_PROMPT = (
+    "Write the numbers from one to two hundred in words, one per line, "
+    "with nothing else. Run {n}."  # the run number keeps Ollama from replaying a cached answer
+)
+SPEED_RUNS = 3
+SPEED_TOKENS = 256
+
+
+def speed_pass(run, target: str, log=print) -> dict:
+    """Load time, then median/min/max generation speed and warm time to first token."""
+    warm = run(target, WARMUP_PROMPT, max_tokens=8)
+    gens = [
+        run(target, SPEED_PROMPT.format(n=i + 1), max_tokens=SPEED_TOKENS)
+        for i in range(SPEED_RUNS)
+    ]
+    tps = [g.gen_tps for g in gens if g.gen_tps]
+    perf = {
+        "load_s": round(warm.load_s, 1),
+        "ttft_s": round(statistics.median(g.ttft_s for g in gens), 2),
+        "gen_tps": round(statistics.median(tps), 1) if tps else 0.0,
+        "gen_tps_min": round(min(tps), 1) if tps else 0.0,
+        "gen_tps_max": round(max(tps), 1) if tps else 0.0,
+        "speed_runs": len(tps),
+    }
+    log(
+        f"    speed pass: load {perf['load_s']}s, {perf['gen_tps']} tok/s "
+        f"(min {perf['gen_tps_min']}, max {perf['gen_tps_max']}), ttft {perf['ttft_s']}s"
+    )
+    return perf
+
+
 def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
     """Run every task once on one model x runtime; return a result row."""
     run = runners.run_mlx if runtime == "mlx" else runners.run_ollama
+    try:
+        speed = speed_pass(run, target, log)
+    except Exception as e:  # fall back to timings from the quality tasks
+        log(f"    speed pass failed ({e}); using quality-task timings")
+        speed = {}
     scores: dict[str, list[float]] = {c: [] for c in CATEGORIES}
     load_s = ttft_s = peak_gb = 0.0
     prompt_tps: list[float] = []
@@ -69,6 +110,7 @@ def bench_one(model: Model, runtime: str, target: str, log=print) -> dict:
             "ttft_s": round(ttft_s, 2),
             "prompt_tps": _avg(prompt_tps),
             "gen_tps": _avg(gen_tps),
+            **speed,  # the speed pass, when it ran, replaces the task averages above
             "peak_gb": round(peak_gb, 1),
             "num_ctx": num_ctx,
             # the worst task: a long prompt can push layers off the GPU

@@ -168,3 +168,21 @@ def test_gpu_share_is_measured_from_api_ps(monkeypatch):
     assert runners._ollama_resident("qwen2.5:32b") == (20.0, 0.5)  # exact tag, not the 7b
     assert runners._ollama_resident("qwen2.5:7b") == (5.0, 1.0)
     assert runners._ollama_resident("llama3.2:3b") == (0.0, None)
+
+
+@pytest.mark.parametrize(
+    "count,seconds,expected",
+    [(50, 1.0, 50.0), (1, 0.01, 0.0), (50, 0.0, 0.0), (50_000, 1.0, 0.0)],
+)
+def test_rate_rejects_untrustworthy_timings(count, seconds, expected):
+    assert runners.rate(count, seconds) == expected
+
+
+def test_missing_durations_give_unknown_not_absurd_rates(monkeypatch):
+    import httpx
+
+    payload = {"response": "x", "prompt_eval_count": 100, "eval_count": 50}  # no durations
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp({"models": []}))
+    g = runners.run_ollama("m", "p")
+    assert g.prompt_tps == 0.0 and g.gen_tps == 0.0

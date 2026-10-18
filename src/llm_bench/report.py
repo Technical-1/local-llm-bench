@@ -20,6 +20,13 @@ def _pct(x: float) -> str:
     return f"{round(x * 100)}%"
 
 
+def _spread(perf: dict) -> str:
+    """Min to max generation speed across the speed-pass runs."""
+    if not perf.get("speed_runs"):
+        return "-"
+    return f"{perf['gen_tps_min']:.0f} to {perf['gen_tps_max']:.0f}"
+
+
 def _gpu_share(perf: dict) -> str:
     """Measured share of the model on the GPU; under 100% means CPU offload."""
     share = perf.get("gpu_share")
@@ -45,7 +52,8 @@ def render(rows: list[dict], hw: dict) -> str:
         f"_{len(rows)} model × runtime configurations · {machine_line(hw)}_",
         "",
         "Composite = 70% quality (auto-scored accuracy) + 30% speed "
-        f"(generation tok/s, full marks at {SPEED_FULL_MARKS_TPS:.0f}).",
+        f"(median generation tok/s over the speed pass, full marks at "
+        f"{SPEED_FULL_MARKS_TPS:.0f}).",
         f"Fits = measured peak memory ≤ {budget:.1f} GB, this machine's accelerator budget.",
         "",
         "## Overall ranking",
@@ -80,15 +88,16 @@ def render(rows: list[dict], hw: dict) -> str:
         "",
         "## Performance",
         "",
-        "| Model | Runtime | Load s | TTFT s | Prompt tok/s | Gen tok/s | Peak GB | On GPU |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Model | Runtime | Load s | TTFT s | Prompt tok/s | Gen tok/s | Gen range "
+        "| Peak GB | On GPU |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in sorted(rows, key=lambda r: r["perf"]["gen_tps"], reverse=True):
         p = r["perf"]
         out.append(
             f"| {r['model']} | {r['runtime']} | {p['load_s']:.1f} | {p['ttft_s']:.2f} | "
-            f"{p['prompt_tps']:.0f} | {p['gen_tps']:.0f} | {p['peak_gb']:.1f} | "
-            f"{_gpu_share(p)} |"
+            f"{p['prompt_tps']:.0f} | {p['gen_tps']:.0f} | {_spread(p)} | "
+            f"{p['peak_gb']:.1f} | {_gpu_share(p)} |"
         )
 
     cut = [r for r in rows if r.get("truncated_tasks")]

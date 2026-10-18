@@ -23,10 +23,9 @@ def fake_machine(monkeypatch, nvidia_hw):
     )
     monkeypatch.setattr(runners, "mlx_installed", lambda: False)
 
-    def perfect_model(tag, prompt):
-        return runners.Generation(
-            text=REFERENCE_ANSWERS[PROMPT_TO_ID[prompt]], gen_tps=40.0, peak_gb=5.2
-        )
+    def perfect_model(tag, prompt, max_tokens=None):
+        text = REFERENCE_ANSWERS.get(PROMPT_TO_ID.get(prompt), "one two three")
+        return runners.Generation(text=text, gen_tps=40.0, peak_gb=5.2)
 
     monkeypatch.setattr(runners, "run_ollama", perfect_model)
     return nvidia_hw
@@ -47,6 +46,7 @@ def test_run_scores_a_perfect_model_at_100_percent(fake_machine, tmp_path, capsy
     rows = json.loads((tmp_path / "results.json").read_text())
     assert {r["model"] for r in rows} == {"qwen2.5-7b", "phi4-mini"}
     assert all(r["quality_overall"] == 1.0 for r in rows)
+    assert all(r["perf"]["speed_runs"] == 3 for r in rows)  # the speed pass ran
     card = (tmp_path / "scorecard.md").read_text(encoding="utf-8")
     assert "NVIDIA GeForce RTX 4070" in card and "| ✓ |" in card
 
@@ -84,10 +84,10 @@ def test_report_without_results_says_so(fake_machine, tmp_path, capsys):
 
 
 def test_truncated_prompt_is_flagged_in_the_scorecard(fake_machine, tmp_path, monkeypatch):
-    def short_window(tag, prompt):
-        tid = PROMPT_TO_ID[prompt]
+    def short_window(tag, prompt, max_tokens=None):
+        tid = PROMPT_TO_ID.get(prompt)
         return runners.Generation(
-            text=REFERENCE_ANSWERS[tid], gen_tps=40.0, truncated=tid == "longctx_needle"
+            text=REFERENCE_ANSWERS.get(tid, ""), gen_tps=40.0, truncated=tid == "longctx_needle"
         )
 
     monkeypatch.setattr(runners, "run_ollama", short_window)

@@ -176,7 +176,7 @@ def test_amd_sysfs_free_vram(monkeypatch, tmp_path):
     (dev / "mem_info_vram_used").write_text(str(4 * hwprobe.GB))
     (tmp_path / "renderD128").mkdir()  # not a card; ignored
     monkeypatch.setattr(hwprobe, "DRM", str(tmp_path))
-    (gpu,) = hwprobe._linux_amd_gpus()
+    (gpu,) = hwprobe._linux_sysfs_gpus()
     assert gpu["vram_gb"] == 16.0 and gpu["free_gb"] == 12.0
 
 
@@ -301,3 +301,44 @@ def test_integrated_intel_reporting_shared_memory_is_not_an_accelerator(monkeypa
     )
     hw = hwprobe.probe()
     assert hw["gpu"] is None and hw["fast_gb"] == 0.0
+
+
+def _card(root, n, vendor, files):
+    dev = root / f"card{n}" / "device"
+    dev.mkdir(parents=True)
+    (dev / "vendor").write_text(vendor + "\n")
+    for rel, value in files.items():
+        f = root / f"card{n}" / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(str(value))
+
+
+def test_sysfs_reads_discrete_intel_arc_vram(monkeypatch, tmp_path):
+    # xe driver: VRAM per tile
+    _card(tmp_path, 0, "0x8086", {"device/tile0/physical_vram_size_bytes": 12 * hwprobe.GB})
+    # i915 driver: VRAM per card
+    _card(tmp_path, 1, "0x8086", {"lmem_total_bytes": 16 * hwprobe.GB})
+    _card(tmp_path, 2, "0x8086", {})  # integrated: no local memory, skipped
+    monkeypatch.setattr(hwprobe, "DRM", str(tmp_path))
+    monkeypatch.setattr(hwprobe, "_pci_name", lambda dev: None)
+    gpus = hwprobe._linux_sysfs_gpus()
+    assert [(g["name"], g["vram_gb"], g["kind"]) for g in gpus] == [
+        ("Intel GPU (card0)", 12.0, "intel"),
+        ("Intel GPU (card1)", 16.0, "intel"),
+    ]
+
+
+def test_sysfs_names_amd_cards_from_lspci(monkeypatch, tmp_path):
+    _card(tmp_path, 0, "0x1002", {"device/mem_info_vram_total": 24 * hwprobe.GB})
+    monkeypatch.setattr(hwprobe, "DRM", str(tmp_path))
+    monkeypatch.setattr(hwprobe, "find_exe", lambda *a, **k: "/usr/bin/lspci")
+    lspci = (
+        '03:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" '
+        '"Navi 31 [Radeon RX 7900 XT/7900 XTX]" -rc8'
+    )
+    monkeypatch.setattr(hwprobe, "_run", lambda cmd, **k: lspci)
+    (gpu,) = hwprobe._linux_sysfs_gpus()
+    assert gpu["name"] == (
+        "Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XT/7900 XTX]"
+    )
+    assert gpu["kind"] == "amd" and gpu["vram_gb"] == 24.0

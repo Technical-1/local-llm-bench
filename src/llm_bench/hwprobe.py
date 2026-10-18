@@ -214,6 +214,14 @@ def _windows_wmi_gpus():
 DRM = "/sys/class/drm"
 
 
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
 def _read_int(path):
     try:
         with open(path) as f:
@@ -222,15 +230,56 @@ def _read_int(path):
         return None
 
 
-def _linux_amd_gpus():
+LSPCI_KNOWN = ("/usr/bin/lspci", "/usr/sbin/lspci", "/sbin/lspci")
+VENDORS = {"0x1002": "amd", "0x8086": "intel"}  # NVIDIA comes from nvidia-smi
+
+
+def _pci_name(dev):
+    """Marketing name from lspci for a sysfs device (e.g. 'Navi 31 [Radeon RX 7900 XT/7900
+    XTX]'), or None. The PCI slot is the name of the directory the device link points to."""
+    exe = find_exe("lspci", LSPCI_KNOWN, search_path=False)
+    if not exe:
+        return None
+    slot = os.path.basename(os.path.realpath(dev))
+    fields = re.findall(r'"([^"]*)"', _run([exe, "-mm", "-s", slot]))
+    return f"{fields[1]} {fields[2]}" if len(fields) >= 3 else None
+
+
+def _intel_vram(card, dev):
+    """Discrete Intel Arc VRAM in bytes. xe reports it per tile; i915 per card.
+    Read from the driver docs and llmfit; not yet confirmed on real hardware,
+    so `llm-bench doctor` output from an Arc machine is welcome."""
+    tiles = sorted(
+        d for d in (os.listdir(dev) if os.path.isdir(dev) else []) if re.fullmatch(r"tile\d+", d)
+    )
+    sizes = [_read_int(f"{dev}/{t}/physical_vram_size_bytes") for t in tiles]
+    if any(sizes):
+        return sum(x for x in sizes if x)
+    return _read_int(f"{DRM}/{card}/lmem_total_bytes")
+
+
+def _linux_sysfs_gpus():
+    """AMD (amdgpu) and discrete Intel GPUs from /sys/class/drm."""
     gpus = []
     for card in sorted(os.listdir(DRM)) if os.path.isdir(DRM) else []:
-        dev = f"{DRM}/{card}/device"
-        total = _read_int(f"{dev}/mem_info_vram_total")
-        if not re.fullmatch(r"card\d+", card) or total is None:
+        if not re.fullmatch(r"card\d+", card):
             continue
-        gpu = dict(name=f"AMD GPU ({card})", vram_gb=total / GB, kind="amd")
-        used = _read_int(f"{dev}/mem_info_vram_used")
+        dev = f"{DRM}/{card}/device"
+        kind = VENDORS.get((_read_text(f"{dev}/vendor") or "").lower())
+        total = used = None
+        if kind == "amd" or (kind is None and os.path.exists(f"{dev}/mem_info_vram_total")):
+            kind = "amd"
+            total = _read_int(f"{dev}/mem_info_vram_total")
+            used = _read_int(f"{dev}/mem_info_vram_used")
+        elif kind == "intel":
+            total = _intel_vram(card, dev)
+        if not total:
+            continue
+        label = "AMD" if kind == "amd" else "Intel"
+        name = _read_text(f"{dev}/product_name") or _pci_name(dev) or f"{label} GPU ({card})"
+        if label.lower() not in name.lower():
+            name = f"{label} {name}"
+        gpu = dict(name=name, vram_gb=total / GB, kind=kind)
         if used is not None:
             gpu["free_gb"] = (total - used) / GB
         gpus.append(gpu)
@@ -283,19 +332,11 @@ def gpus():
         if not found:
             found = _windows_wmi_gpus()
     elif system == "Linux":
-        found += _linux_amd_gpus()
+        found += _linux_sysfs_gpus()
     return found
 
 
 # ---------------- raw output, for bug reports ----------------
-def _read_text(path):
-    try:
-        with open(path) as f:
-            return f.read().strip()
-    except Exception:
-        return None
-
-
 def _windows_registry_raw():
     lines = []
     try:
@@ -386,6 +427,17 @@ def raw_sources():
                 val = _read_text(f"{DRM}/{card}/device/{name}")
                 if val is not None:
                     out.append((f"{DRM}/{card}/device/{name}", val))
+            dev = f"{DRM}/{card}/device"
+            extra = [f"{DRM}/{card}/lmem_total_bytes"] + [
+                f"{dev}/{t}/physical_vram_size_bytes"
+                for t in (os.listdir(dev) if os.path.isdir(dev) else [])
+                if re.fullmatch(r"tile\d+", t)
+            ]
+            for path in extra:
+                val = _read_text(path)
+                if val is not None:
+                    out.append((path, val))
+            out.append((f"lspci name for {card}", str(_pci_name(dev))))
     return out
 
 

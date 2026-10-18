@@ -70,7 +70,7 @@ def test_run_ollama_converts_timings(monkeypatch):
         httpx,
         "get",
         lambda *a, **k: _Resp(
-            {"models": [{"name": "qwen2.5:7b", "size": 5_000_000_000, "size_vram": 4_000_000_000}]}
+            {"models": [{"name": "qwen2.5:7b", "size": 5 * 2**30, "size_vram": 4 * 2**30}]}
         ),
     )
     g = runners.run_ollama("qwen2.5:7b", "2+2?")
@@ -160,8 +160,8 @@ def test_gpu_share_is_measured_from_api_ps(monkeypatch):
 
     ps = {
         "models": [
-            {"name": "qwen2.5:32b", "size": 20_000_000_000, "size_vram": 10_000_000_000},
-            {"name": "qwen2.5:7b", "size": 5_000_000_000, "size_vram": 5_000_000_000},
+            {"name": "qwen2.5:32b", "size": 20 * 2**30, "size_vram": 10 * 2**30},
+            {"name": "qwen2.5:7b", "size": 5 * 2**30, "size_vram": 5 * 2**30},
         ]
     }
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(ps))

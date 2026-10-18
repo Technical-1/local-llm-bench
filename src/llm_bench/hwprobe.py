@@ -20,7 +20,7 @@ import subprocess
 
 from ._exe import find_exe, windows_dir
 
-GB = 1024**3
+GB = 1024**3  # every "GB" in llm-bench, budgets and measured peaks alike
 SYSCTL = "/usr/sbin/sysctl"  # macOS ships it here; never resolved through PATH
 
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ._exe import find_exe
+from .hwprobe import GB  # one unit everywhere, so peaks compare with budgets
 
 
 def _ollama_url(host: str | None) -> str:
@@ -125,7 +126,7 @@ def _ollama_resident(tag: str) -> tuple[float, float | None]:
     for m in exact or family:
         size = m.get("size", 0)
         share = m["size_vram"] / size if size and "size_vram" in m else None
-        return size / 1e9, share
+        return size / GB, share
     return 0.0, None
 
 
@@ -252,7 +253,7 @@ def run_mlx(repo: str, prompt: str, max_tokens: int = MLX_MAX_TOKENS) -> Generat
         ttft_s=ttft or 0.0,
         prompt_tps=plausible(prompt_tps, prompt_tokens),
         gen_tps=plausible(gen_tps, gen_tokens),
-        peak_gb=mx.get_peak_memory() / 1e9,
+        peak_gb=mx.get_peak_memory() / GB,
         prompt_tokens=prompt_tokens,
         gpu_share=1.0,  # MLX runs entirely on the Apple GPU
     )

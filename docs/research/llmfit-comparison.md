@@ -94,7 +94,7 @@ rows where llm-bench is ahead).
 | Speed score | `tps / target * 100`, target 40 tok/s (25 reasoning, 200 embedding) (`core/fit.rs:2318-2326`). | `min(tps / 80, 1)`. | none | no |
 | Fit score | Flat 100 up to 70% utilisation, then a one-sided Gaussian with sigma 0.20 (`core/fit.rs:2328-2343`). | Not part of the ranking. | small | no: our ranking is over models that already ran |
 | Context score | 100 if the model's max context >= target (4k general, 8k coding/reasoning), 70 at half, else 30 (`core/fit.rs:2345-2361`). | Not scored; one long-context recall task instead. | none | no |
-| Confidence labels | Every tok/s carries `measured_local`, `measured_community`, `calibrated`, `estimated` or `unsupported`, first match wins (`EstimateConfidence`, `core/fit.rs:269-355`). The inputs are exposed in `estimate_basis` (method, bandwidth used, efficiency, context, calibration factor) (`:237-262`). | Estimates and measurements sit in separate places; the scorecard shows "est. -> measured" for memory only. | small | yes: matches the modelfit rule that every answer states its source |
+| Confidence labels | Every tok/s carries `measured_local`, `measured_community`, `calibrated`, `estimated` or `unsupported`, first match wins (`EstimateConfidence`, `core/fit.rs:269-355`). The inputs are exposed in `estimate_basis` (method, bandwidth used, efficiency, context, calibration factor) (`:237-262`). | Estimates and measurements sit in separate places; the scorecard shows "est. -> measured" for memory only. | small | yes: every answer should state its source |
 | Calibration from your own runs | Median of measured/estimated over dense models >= 1B on identical hardware (same CPU and GPU name, `core/benchmarks.rs:546-557`), clamped to [0.05, 3.0], scales every other estimate (`apply_local_calibration`, `core/analysis.rs:340-395`). | None. | small | yes, after tok/s estimates exist |
 | Benchmark command | `llmfit bench`: one warmup ("Say hello."), then 3 runs cycling 4 fixed prompts, `num_predict` 300, runtime-default temperature (`core/bench.rs:125-186`, `:188-247`). Ollama tok/s from `eval_count / eval_duration`, falling back to wall clock when count < 2 or the rate exceeds 10,000 tok/s (`:55-60`, `:249-271`). TTFT = `prompt_eval_duration` only (`:220-222`). OpenAI-compatible endpoints get no TTFT (`:16-20`). Reports avg/min/max. No memory measurement. | 13 quality tasks, one pass each, temperature 0, records load, TTFT (load + prompt eval), prompt and gen tok/s, peak memory (`runners.py`, `bench.py:bench_one`). | small | yes: warmup, repeated fixed-length speed runs, min/max, plausibility guard (improvement 8) |
 | Quality benchmark | `llmfit bench --quality`: 92 tests in 19 roles (`llmfit-core/data/benchmarks.yaml`, `rubric_version: 2`; the module header still says 13 roles, `core/quality.rs:1-4`). Scored by **regex rules with weights**, clamped 0-10 (`evaluate_response`, `core/quality.rs:132-148`). No code is executed (`extract_code_block` only extracts, `:156`). Temperature 0.3, max 1,024 tokens (`:388-389`). Ollama requests send `"think": false` (`:191`). Composite `(quality*2 + min(tps/3,10)*speed_weight) / (2 + speed_weight)`. Produces a role-to-model routing matrix (`:479`). | Code-scored: hidden unit tests executed, exact numeric match, needle retrieval, programmatic format checks; thinking stripped, not disabled. | none (llm-bench is ahead) | no, but the YAML task format is worth a look (improvement 12) |
@@ -291,8 +291,7 @@ citing the source is good practice.
 ### 7. Label every number with its source (S)
 
 - **What:** each speed and memory figure in `check` and the scorecard carries
-  `measured`, `similar-hardware` or `estimate`, the same three words the
-  modelfit plan uses.
+  `measured`, `similar-hardware` or `estimate`.
 - **Why:** llmfit's `EstimateConfidence` (`core/fit.rs:269-355`) shows why
   this matters: a formula number and a measurement both look like "42 tok/s".
   Exposing the inputs, as llmfit's `estimate_basis` does (`:237-262`), also
@@ -318,7 +317,7 @@ citing the source is good practice.
 - **What:** give each result row a `schemaVersion`, the tool version, a
   timestamp and a hardware block, and write a JSON Schema plus a validator
   script that runs in CI. Add `check --json`. This prepares a future
-  `llm-bench run --share` (the modelfit plan's data collector) without
+  `llm-bench run --share` (a community data collector) without
   building the GitHub flow yet.
 - **Why:** results are only comparable across machines if the hardware is in
   the same file as the numbers. llmfit's payload is a good, small starting

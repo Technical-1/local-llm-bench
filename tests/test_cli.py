@@ -96,3 +96,11 @@ def test_truncated_prompt_is_flagged_in_the_scorecard(fake_machine, tmp_path, mo
     assert row["truncated_tasks"] == ["longctx_needle"]
     card = (tmp_path / "scorecard.md").read_text(encoding="utf-8")
     assert "dropped part of the prompt" in card and "longctx_needle" in card
+
+
+def test_check_marks_models_that_need_more_than_is_free(fake_machine, tmp_path, capsys):
+    fake_machine["gpu"]["free_gb"] = 4.0  # a game holds 8 of the 12 GB
+    cli.main(["--out", str(tmp_path), "check"])
+    out = capsys.readouterr().out
+    assert "Free now  3.5 GB" in out
+    assert "fits - fast *" in out and "not in the 3.5 GB free right now" in out

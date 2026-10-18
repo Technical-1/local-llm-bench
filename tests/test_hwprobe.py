@@ -141,3 +141,48 @@ def test_capped_vram_gets_a_note(monkeypatch):
         ram=32.0,
     )
     assert any("4 GB" in n for n in hwprobe.probe()["notes"])
+
+
+# Recorded from an Apple M4 Pro (24 GB) with a browser and an editor open.
+VM_STAT_M4 = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                     9115.
+Pages active:                                 511060.
+Pages inactive:                               516046.
+Pages speculative:                              1621.
+Pages throttled:                                   0.
+Pages wired down:                             325810.
+Pages purgeable:                                6132.
+"""
+
+
+def test_vm_stat_counts_reclaimable_pages():
+    pages = 9115 + 516046 + 1621 + 6132
+    assert hwprobe.parse_vm_stat(VM_STAT_M4) == pytest.approx(pages * 16384 / hwprobe.GB)
+    assert hwprobe.parse_vm_stat("garbage") is None
+
+
+def test_nvidia_smi_reads_free_vram(monkeypatch):
+    monkeypatch.setattr(hwprobe.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hwprobe, "find_exe", lambda *a, **k: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(hwprobe, "_run", lambda *a, **k: "NVIDIA GeForce RTX 4070, 12282, 6141\n")
+    (gpu,) = hwprobe._nvidia_smi()
+    assert gpu["free_gb"] == pytest.approx(6141 / 1024)
+
+
+def test_amd_sysfs_free_vram(monkeypatch, tmp_path):
+    dev = tmp_path / "card0" / "device"
+    dev.mkdir(parents=True)
+    (dev / "mem_info_vram_total").write_text(str(16 * hwprobe.GB))
+    (dev / "mem_info_vram_used").write_text(str(4 * hwprobe.GB))
+    (tmp_path / "renderD128").mkdir()  # not a card; ignored
+    monkeypatch.setattr(hwprobe, "DRM", str(tmp_path))
+    (gpu,) = hwprobe._linux_amd_gpus()
+    assert gpu["vram_gb"] == 16.0 and gpu["free_gb"] == 12.0
+
+
+def test_free_budget_discrete_and_unified():
+    discrete = {"accelerator": "nvidia", "gpu": {"free_gb": 6.0}, "fast_gb": 11.5}
+    assert hwprobe.free_budget(discrete) == 5.5
+    mac = {"accelerator": "apple-unified", "gpu": {}, "fast_gb": 17.8, "ram_free_gb": 8.1}
+    assert hwprobe.free_budget(mac) == 8.1
+    assert hwprobe.free_budget({"accelerator": "cpu", "gpu": None, "fast_gb": 0.0}) is None

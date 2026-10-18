@@ -35,9 +35,14 @@ def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX)
     print("== This machine ==")
     print(f"  OS        {hw['os']} ({hw['arch']})")
     print(f"  CPU       {hw['cpu']}")
-    print(f"  RAM       {hw['ram_gb']:.1f} GB")
+    ram_free = hw.get("ram_free_gb")
+    free_txt = f" ({ram_free:.1f} GB free now)" if ram_free is not None else ""
+    print(f"  RAM       {hw['ram_gb']:.1f} GB{free_txt}")
     print(f"  GPU       {gpu_line}")
     print(f"  Budget    {hw['fast_gb']:.1f} GB fast, {hw['spill_gb']:.1f} GB with CPU offload")
+    free_now = hwprobe.free_budget(hw)
+    if free_now is not None:
+        print(f"  Free now  {free_now:.1f} GB on the accelerator, after the apps already running")
     ollama = "found" if ollama_ok else "NOT FOUND - install from https://ollama.com"
     mlx = (
         ("installed" if runners.mlx_installed() else "available (pip install mlx-lm)")
@@ -51,14 +56,21 @@ def cmd_check(hw: dict, ollama_ok: bool, tags: set[str], ctx: int = DEFAULT_CTX)
     rt = estimate_runtime(hw)
     print(f"\n== Models (estimated at {ctx:,} tokens of context, {rt} weights) ==")
     print(f"  {'model':<20} {'needs':>7}  {'verdict':<27} {'pulled':<7} next step")
+    busy = False
     for m in sorted(MODELS, key=lambda m: m.need_gb(ctx, rt)):
         need = m.need_gb(ctx, rt)
         verdict = hwprobe.fit(need, hw)
+        label = VERDICT[verdict]
+        if verdict == "fast" and free_now is not None and need > free_now:
+            label += " *"
+            busy = True
         pulled = runners.ollama_has(tags, m.ollama)
         step = f"ollama pull {m.ollama}" if verdict != "no" and not pulled else ""
+        print(f"  {m.name:<20} {need:>5.1f}GB  {label:<27} {'yes' if pulled else '-':<7} {step}")
+    if busy:
         print(
-            f"  {m.name:<20} {need:>5.1f}GB  {VERDICT[verdict]:<27} "
-            f"{'yes' if pulled else '-':<7} {step}"
+            f"\n  * fits this machine, but not in the {free_now:.1f} GB free right now. "
+            "Close other apps first, or it will be slow."
         )
     print("\nNext: pull one or more models marked 'fits', then  llm-bench run")
     return 0

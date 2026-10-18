@@ -34,35 +34,69 @@ def _run(cmd, timeout=10):
 
 
 # ---------------- system RAM ----------------
+VM_STAT = "/usr/bin/vm_stat"
+
+
+def _windows_memory():
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    st = MEMORYSTATUSEX()
+    st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+    return st
+
+
 def ram_gb():
     system = platform.system()
     try:
         if system == "Darwin":
             return int(_run([SYSCTL, "-n", "hw.memsize"]).strip()) / GB
         if system == "Windows":
-
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-
-            st = MEMORYSTATUSEX()
-            st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
-            return st.ullTotalPhys / GB
+            return _windows_memory().ullTotalPhys / GB
         with open("/proc/meminfo") as f:
             kb = int(re.search(r"MemTotal:\s+(\d+)", f.read()).group(1))
             return kb * 1024 / GB
     except Exception:
         return 0.0
+
+
+def parse_vm_stat(out):
+    """Reclaimable memory from macOS vm_stat: free, inactive, speculative and
+    purgeable pages, the same approximation Activity Monitor uses."""
+    page = re.search(r"page size of (\d+) bytes", out)
+    if not page:
+        return None
+    pages = 0
+    for key in ("free", "inactive", "speculative", "purgeable"):
+        m = re.search(rf"Pages {key}:\s+(\d+)", out)
+        pages += int(m.group(1)) if m else 0
+    return pages * int(page.group(1)) / GB
+
+
+def ram_free_gb():
+    """Memory available to a new process right now; None if it can't be read."""
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            return parse_vm_stat(_run([VM_STAT]))
+        if system == "Windows":
+            return _windows_memory().ullAvailPhys / GB
+        with open("/proc/meminfo") as f:
+            kb = int(re.search(r"MemAvailable:\s+(\d+)", f.read()).group(1))
+            return kb * 1024 / GB
+    except Exception:
+        return None
 
 
 def cpu_name():
@@ -105,12 +139,15 @@ def _nvidia_smi():
     exe = find_exe("nvidia-smi", known)
     if not exe:
         return []
-    out = _run([exe, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
+    out = _run([exe, "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"])
     gpus = []
     for line in out.splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) == 2 and parts[1].replace(".", "").isdigit():
-            gpus.append(dict(name=parts[0], vram_gb=float(parts[1]) / 1024, kind="nvidia"))
+        if len(parts) >= 2 and parts[1].replace(".", "").isdigit():
+            gpu = dict(name=parts[0], vram_gb=float(parts[1]) / 1024, kind="nvidia")
+            if len(parts) >= 3 and parts[2].replace(".", "").isdigit():
+                gpu["free_gb"] = float(parts[2]) / 1024
+            gpus.append(gpu)
     return gpus
 
 
@@ -172,17 +209,29 @@ def _windows_wmi_gpus():
     ]
 
 
+DRM = "/sys/class/drm"
+
+
+def _read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
 def _linux_amd_gpus():
     gpus = []
-    for card in sorted(os.listdir("/sys/class/drm")) if os.path.isdir("/sys/class/drm") else []:
-        p = f"/sys/class/drm/{card}/device/mem_info_vram_total"
-        if re.fullmatch(r"card\d+", card) and os.path.exists(p):
-            try:
-                gpus.append(
-                    dict(name=f"AMD GPU ({card})", vram_gb=int(open(p).read()) / GB, kind="amd")
-                )
-            except Exception:
-                pass
+    for card in sorted(os.listdir(DRM)) if os.path.isdir(DRM) else []:
+        dev = f"{DRM}/{card}/device"
+        total = _read_int(f"{dev}/mem_info_vram_total")
+        if not re.fullmatch(r"card\d+", card) or total is None:
+            continue
+        gpu = dict(name=f"AMD GPU ({card})", vram_gb=total / GB, kind="amd")
+        used = _read_int(f"{dev}/mem_info_vram_used")
+        if used is not None:
+            gpu["free_gb"] = (total - used) / GB
+        gpus.append(gpu)
     return gpus
 
 
@@ -208,6 +257,10 @@ def apple_gpu_share(ram):
     return ram * (0.75 if ram > 36 else 0.66)
 
 
+def _round(x):
+    return None if x is None else round(x, 1)
+
+
 def probe():
     system, machine = platform.system(), platform.machine().lower()
     ram = ram_gb()
@@ -216,6 +269,7 @@ def probe():
         arch=machine,
         cpu=cpu_name(),
         ram_gb=round(ram, 1),
+        ram_free_gb=_round(ram_free_gb()),
         gpu=None,
         accelerator="cpu",
         mlx_ok=False,
@@ -239,7 +293,10 @@ def probe():
         best = max(cands, key=lambda g: g["vram_gb"], default=None)
         if best:
             info["gpu"] = dict(
-                name=best["name"], vram_gb=round(best["vram_gb"], 1), kind=best["kind"]
+                name=best["name"],
+                vram_gb=round(best["vram_gb"], 1),
+                free_gb=_round(best.get("free_gb")),
+                kind=best["kind"],
             )
             info["accelerator"] = best["kind"]
             info["fast_gb"] = round(best["vram_gb"] - 0.5, 1)
@@ -262,6 +319,20 @@ def probe():
         if system == "Darwin":
             info["notes"].append("Intel Mac: no MLX; Ollama runs on the CPU.")
     return info
+
+
+def free_budget(hw):
+    """What the accelerator could take right now, after other apps; None if unknown.
+
+    A discrete GPU reports its own free VRAM. On unified memory the GPU draws
+    from system RAM, so it is capped by what RAM has free.
+    """
+    gpu = hw.get("gpu") or {}
+    if hw.get("accelerator") == "apple-unified" and hw.get("ram_free_gb") is not None:
+        return round(min(hw["fast_gb"], hw["ram_free_gb"]), 1)
+    if gpu.get("free_gb") is not None:
+        return round(max(gpu["free_gb"] - 0.5, 0.0), 1)
+    return None
 
 
 def fit(need_gb, hw):

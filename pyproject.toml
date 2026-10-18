@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-bench"
+version = "0.1.0"
+description = "Find out which local LLMs your computer can run, then benchmark their quality, speed and memory"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jacob Kanfer", email = "51518860+Technical-1@users.noreply.github.com" }]
+keywords = ["llm", "benchmark", "ollama", "mlx", "local-ai", "gpu", "vram"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Benchmark",
+]
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+mlx = ["mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+llm-bench = "llm_bench.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Technical-1/local-llm-bench"
+Issues = "https://github.com/Technical-1/local-llm-bench/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_bench"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# task prompts are long literal strings; wrapping them would change what the model sees
+"src/llm_bench/tasks.py" = ["E501"]
+# the model registry is an aligned table
+"src/llm_bench/registry.py" = ["E501", "E241"]
